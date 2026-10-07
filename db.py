@@ -543,16 +543,63 @@ class DB:
         return [dict(r) for r in self.c.fetchall()]
 
     def update_schedule_weekday(self, ids: list[int], weekday: int) -> None:
-        """Меняет день недели (0=Пн..4=Пт) для указанных строк расписания."""
+        """Меняет день недели (0=Пн..4=Пт) для указанных строк расписания.
+
+        Перенос блокируется, если в целевом дне на той же паре у преподавателя
+        уже стоит ДРУГОЕ занятие — иначе возникла бы накладка.
+        """
         if not ids:
             return
         weekday = int(weekday)
         if weekday not in (0, 1, 2, 3, 4):
             raise ValueError(f"Некорректный день недели: {weekday!r}")
+        id_set = {int(i) for i in ids}
         with self._tx():
+            rows = self.c.execute(
+                """
+                SELECT s.id, s.teacher_id, s.kind, s.pair_number, s.weekday,
+                       s.subject_id, s.auditorium_id,
+                       sub.name AS subject_name,
+                       g.name   AS group_name,
+                       a.name   AS aud_name
+                FROM schedule s
+                LEFT JOIN subjects sub ON sub.id = s.subject_id
+                JOIN groups      g ON g.id = s.group_id
+                JOIN auditoriums a ON a.id = s.auditorium_id
+                """,
+            ).fetchall()
+            moving = [dict(r) for r in rows if int(r["id"]) in id_set]
+            if not moving:
+                return
+            if len({int(r["teacher_id"]) for r in moving}) > 1:
+                raise ValueError("Нельзя переносить занятия разных преподавателей разом.")
+            move_keys = {(int(r["subject_id"]) if r["subject_id"] is not None else -1,
+                          str(r["kind"]), int(r["auditorium_id"])) for r in moving}
+            if len(move_keys) > 1:
+                raise ValueError("Нельзя переносить разные занятия разом.")
+            move_key = next(iter(move_keys))
+            move_pairs = {int(r["pair_number"]) for r in moving}
+            for r in rows:
+                if int(r["id"]) in id_set:
+                    continue  # переносимые строки не мешают сами себе
+                if int(r["teacher_id"]) != int(moving[0]["teacher_id"]):
+                    continue
+                if int(r["weekday"]) != weekday:
+                    continue
+                if int(r["pair_number"]) not in move_pairs:
+                    continue
+                other_key = (int(r["subject_id"]) if r["subject_id"] is not None else -1,
+                             str(r["kind"]), int(r["auditorium_id"]))
+                if other_key != move_key:
+                    subj = r["subject_name"] or "—"
+                    raise ValueError(
+                        f"День занят: в {['Пн', 'Вт', 'Ср', 'Чт', 'Пт'][weekday]} "
+                        f"на паре {r['pair_number']} уже стоит «{subj}» "
+                        f"({r['group_name']}, {r['aud_name']})."
+                    )
             self.c.executemany(
                 "UPDATE schedule SET weekday = ? WHERE id = ?",
-                [(weekday, int(i)) for i in ids],
+                [(weekday, int(i)) for i in id_set],
             )
 
     def clear_teacher_schedule(self, teacher_id: int) -> None:
