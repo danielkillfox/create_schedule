@@ -1,1 +1,1 @@
-test
+⚖️ Licensed under PolyForm Noncommercial 1.0.0
