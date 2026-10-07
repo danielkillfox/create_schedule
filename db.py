@@ -405,7 +405,7 @@ class DB:
         kind: str,
         assignments: list[tuple[int, int, int]],
         weekday: int = 0,
-    ) -> int:
+    ) -> tuple[int, list[dict]]:
         """
         ДОБАВЛЯЕТ занятия в расписание преподавателя (не перезаписывает).
 
@@ -414,14 +414,21 @@ class DB:
 
         Точные дубли (тот же препод + предмет + тип + группа + аудитория + ячейка + день)
         пропускаются — чтобы повторное нажатие «Записать в расписание» не создавало
-        копии. Всё остальное добавляется к уже существующему расписанию.
+        копии.
 
-        Возвращает количество фактически добавленных строк.
+        Накладки (тот же препод + тот же день + та же пара, но ДРУГОЕ занятие:
+        другой предмет, тип или аудитория) НЕ записываются — один человек не может
+        вести два разных занятия одновременно. Несколько групп в одной аудитории
+        на одном занятии — это не накладка и записывается как раньше.
+
+        Возвращает (добавлено_строк, накладки) где накладки — список словарей
+        с ключами group_name, aud_name, pair_number, weekday, busy_by.
         """
         if kind not in (KIND_LECTURE, KIND_PRACTICE):
             raise ValueError(f"Некорректный тип занятия: {kind!r}")
         tid = int(teacher_id)
         sid = int(subject_id) if subject_id is not None else None
+        sid_key = -1 if sid is None else sid
 
         # Нормализуем assignments к (group, aud, pair, weekday)
         normalized: list[tuple[int, int, int, int]] = []
@@ -433,31 +440,82 @@ class DB:
                 g, au, p = a
                 normalized.append((int(g), int(au), int(p), int(weekday)))
 
-        with self._tx():
-            # Уже записанные тройки (group, aud, cell, weekday) для этого препод+предмет+тип
-            if sid is None:
-                self.c.execute(
-                    "SELECT group_id, auditorium_id, pair_number, weekday FROM schedule "
-                    "WHERE teacher_id = ? AND kind = ? AND subject_id IS NULL",
-                    (tid, kind),
-                )
-            else:
-                self.c.execute(
-                    "SELECT group_id, auditorium_id, pair_number, weekday FROM schedule "
-                    "WHERE teacher_id = ? AND kind = ? AND subject_id = ?",
-                    (tid, kind, sid),
-                )
-            existing = {
-                (int(r["group_id"]), int(r["auditorium_id"]),
-                 int(r["pair_number"]), int(r["weekday"]))
-                for r in self.c.fetchall()
-            }
+        def _names(gid: int, aid: int) -> tuple[str, str]:
+            g = self.c.execute(
+                "SELECT name FROM groups WHERE id = ?", (gid,)).fetchone()
+            a = self.c.execute(
+                "SELECT name FROM auditoriums WHERE id = ?", (aid,)).fetchone()
+            return (
+                str(g["name"]) if g else f"#{gid}",
+                str(a["name"]) if a else f"#{aid}",
+            )
 
-            to_insert = [
-                (tid, sid, int(g), int(a), kind, int(p), int(w))
-                for (g, a, p, w) in normalized
-                if (int(g), int(a), int(p), int(w)) not in existing
-            ]
+        def _lesson_desc(row: dict) -> str:
+            subj = row.get("subject_name") or "—"
+            grp = row.get("group_name") or "—"
+            aud = row.get("aud_name") or "—"
+            return f"«{subj}», {grp}, {aud}"
+
+        with self._tx():
+            # Все существующие занятия препода с именами для отчётов
+            self.c.execute(
+                """
+                SELECT s.id, s.kind, s.pair_number, s.weekday, s.subject_id,
+                       s.group_id, s.auditorium_id,
+                       sub.name AS subject_name,
+                       g.name   AS group_name,
+                       a.name   AS aud_name
+                FROM schedule s
+                LEFT JOIN subjects sub ON sub.id = s.subject_id
+                JOIN groups      g ON g.id = s.group_id
+                JOIN auditoriums a ON a.id = s.auditorium_id
+                WHERE s.teacher_id = ?
+                """,
+                (tid,),
+            )
+            existing_rows = [dict(r) for r in self.c.fetchall()]
+
+            # Ключ занятия в слоте: одинаковый ключ = то же занятие (можно рядом),
+            # разный ключ в том же слоте = накладка.
+            def lesson_key(subject_id, k, aud_id) -> tuple:
+                sk = -1 if subject_id is None else int(subject_id)
+                return (sk, str(k), int(aud_id))
+
+            my_key = (sid_key, str(kind))  # (предмет, тип) нового занятия
+            occupied: dict[tuple[int, int], tuple] = {}  # (weekday, pair) -> lesson_key
+            exact: set[tuple[int, int, int, int]] = set()  # (group, aud, pair, weekday)
+            descs: dict[tuple[int, int], dict] = {}  # (weekday, pair) -> пример строки
+            for r in existing_rows:
+                slot = (int(r["weekday"]), int(r["pair_number"]))
+                key = lesson_key(r["subject_id"], r["kind"], r["auditorium_id"])
+                if (key[0], key[1]) == my_key:
+                    exact.add((int(r["group_id"]), int(r["auditorium_id"]),
+                               int(r["pair_number"]), int(r["weekday"])))
+                occupied.setdefault(slot, key)
+                descs.setdefault(slot, r)
+
+            to_insert: list[tuple] = []
+            conflicts: list[dict] = []
+            # Учитываем и уже принятые в этом вызове строки (накладки внутри пачки)
+            for (g, a, p, w) in normalized:
+                if (g, a, p, w) in exact:
+                    continue  # точный дубль
+                slot = (w, p)
+                new_key = (sid_key, str(kind), a)
+                holder = occupied.get(slot)
+                if holder is not None and holder != new_key:
+                    gname, aname = _names(g, a)
+                    conflicts.append({
+                        "group_name": gname,
+                        "aud_name": aname,
+                        "pair_number": p,
+                        "weekday": w,
+                        "busy_by": _lesson_desc(descs[slot]),
+                    })
+                    continue
+                occupied.setdefault(slot, new_key)
+                exact.add((g, a, p, w))
+                to_insert.append((tid, sid, g, a, kind, p, w))
 
             if to_insert:
                 self.c.executemany(
@@ -467,7 +525,7 @@ class DB:
                     to_insert,
                 )
 
-        return len(to_insert)
+        return len(to_insert), conflicts
 
     def get_teacher_schedule(self, teacher_id: int) -> list[dict]:
         self.c.execute('''

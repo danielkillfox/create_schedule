@@ -305,8 +305,18 @@ def import_from_excel(db, path: str) -> dict:
                 raise ValueError(f"не найдены: {', '.join(missing)}")
             if not 1 <= pair <= 6:
                 raise ValueError(f"пара={row.get('Пара')} (нужно 1..6)")
-            db.save_schedule(tid, sid, kind, [(gid, aid, pair, weekday)])
-            bump(added, "Расписание")
+            added_n, conflicts = db.save_schedule(tid, sid, kind, [(gid, aid, pair, weekday)])
+            if conflicts:
+                c = conflicts[0]
+                errors.append(
+                    f"Расписание, строка {i}: накладка — "
+                    f"у {t} в {WEEKDAYS_RU[c['weekday']]} на паре {pair} "
+                    f"уже стоит другое занятие ({c['busy_by']})"
+                )
+            elif added_n:
+                bump(added, "Расписание")
+            else:
+                bump(updated, "Расписание")  # точный дубль — уже было
         except Exception as e:
             errors.append(f"Расписание, строка {i}: {e}")
 

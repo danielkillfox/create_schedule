@@ -28,6 +28,11 @@ CELL_FILLED = """
              border-radius: 4px; }
     QFrame:hover { border: 1px solid #66bb6a; }
 """
+CELL_CONFLICT = """
+    QFrame { background-color: #4a2b2b; border: 2px solid #e53935;
+             border-radius: 4px; }
+    QFrame:hover { border: 2px solid #ff7961; }
+"""
 
 
 class SlotCell(QFrame):
@@ -57,9 +62,12 @@ class SlotCell(QFrame):
         layout.addWidget(self.text_label)
         layout.addStretch(1)
 
-    def set_text(self, text: str):
+    def set_text(self, text: str, conflict: bool = False):
         self.text_label.setText(text)
-        self.setStyleSheet(CELL_FILLED if text else CELL_NORMAL)
+        if conflict:
+            self.setStyleSheet(CELL_CONFLICT)
+        else:
+            self.setStyleSheet(CELL_FILLED if text else CELL_NORMAL)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -212,8 +220,16 @@ class CalendarTab(QWidget):
                     f"{subj}{tag} — {groups} — {aud} "
                     f"(пара {p}, {WEEKDAYS[w]})"
                 )
-            cell.set_text("\n— — —\n".join(short_lines))
-            self._details[(p, w)] = "\n".join(full_lines)
+            cell.set_text("\n— — —\n".join(short_lines), conflict=len(inner) > 1)
+            details = "\n".join(full_lines)
+            if len(inner) > 1:
+                details = (
+                    f"⚠ НАКЛАДКА: {len(inner)} разных занятия "
+                    f"в одно время (пара {p}, {WEEKDAYS[w]}).\n"
+                    f"Оставьте одно: лишнее удалите или перенесите день "
+                    f"на вкладке «6. Расписание».\n\n{details}"
+                )
+            self._details[(p, w)] = details
 
     def show_details(self, pair: int, day_col: int):
         text = self._details.get((pair, day_col), "")

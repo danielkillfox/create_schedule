@@ -1306,7 +1306,8 @@ class MainWindow(QWidget):
         if pair_busy:
             pair_busy_note = (
                 f"Внимание: {pair_busy} зан. поставлены на пару, "
-                f"уже занятую у преподавателя в этот день."
+                f"уже занятую у преподавателя в этот день, — "
+                f"при записи они будут отклонены как накладки."
             )
         return limit_note, pair_busy_note
 
@@ -1550,7 +1551,7 @@ class MainWindow(QWidget):
             return (None, None)
 
         try:
-            added = self.db.save_schedule(
+            added, conflicts = self.db.save_schedule(
                 teacher_id=ctx["teacher_id"],
                 subject_id=ctx["subject_id"],
                 kind=ctx["kind"],
@@ -1559,28 +1560,50 @@ class MainWindow(QWidget):
         except Exception as e:
             if not silent:
                 QMessageBox.critical(self, "Ошибка записи в расписание", str(e))
-            return (None, None)
+            return (None, None, None)
 
         total = len(assignments)
+        conflict_msg = ""
+        if conflicts:
+            shown = "\n".join(
+                f"• {c['group_name']} ({c['aud_name']}, пара {c['pair_number']}, "
+                f"{WEEKDAYS[c['weekday']]}) — занято: {c['busy_by']}"
+                for c in conflicts[:5]
+            )
+            extra = f"\n…и ещё {len(conflicts) - 5}" if len(conflicts) > 5 else ""
+            conflict_msg = (
+                f"\n\nНе записано из-за накладок ({len(conflicts)}): "
+                f"в это время у преподавателя уже стоит другое занятие.\n"
+                f"{shown}{extra}\n"
+                f"Смените день на вкладке «6. Расписание» или удалите лишнее."
+            )
         if not silent:
-            if added == 0:
+            if added == 0 and not conflicts:
                 QMessageBox.information(
                     self, "Готово",
                     "Все эти занятия уже есть в расписании — ничего не добавлено.\n"
                     "Дубликаты пропущены автоматически."
                 )
+            elif added == 0:
+                QMessageBox.warning(
+                    self, "Ничего не записано",
+                    "Все занятия отклонены из-за накладок:"
+                    f"{conflict_msg}\n\n"
+                    f"Преподаватель: «{self.teacher_combo.currentText()}»."
+                )
             else:
                 QMessageBox.information(
                     self, "Готово",
                     f"Добавлено занятий в расписание: {added}\n"
-                    f"(пропущено дублей: {total - added})\n\n"
+                    f"(пропущено дублей: {total - added - len(conflicts)})"
+                    f"{conflict_msg}\n\n"
                     f"Преподаватель: «{self.teacher_combo.currentText()}»\n"
                     f"Использовано ячеек: {self._last_result.cells_used}\n\n"
                     f"Смотрите вкладку «6. Расписание»."
                 )
             self.on_schedule_teacher_changed()
 
-        return (added, total)
+        return (added, total, conflicts)
 
     def distribute_and_write(self):
 
@@ -1590,7 +1613,8 @@ class MainWindow(QWidget):
             return   # distribute() сам показал ошибку
 
         # 2. Пишем в расписание (без всплывающего окна)
-        added, total = self.write_to_schedule(silent=True)
+        added, total, conflicts = self.write_to_schedule(silent=True)
+        conflicts = conflicts or []
 
         # 3. Одно итоговое сообщение
         ctx = self._last_context or {}
@@ -1599,7 +1623,12 @@ class MainWindow(QWidget):
             # не удалось записать — сообщение уже было показано
             return
 
-        if added == 0:
+        conflict_msg = (
+            f"\nОтклонено из-за накладок: {len(conflicts)} "
+            f"(в это время уже стоит другое занятие)."
+            if conflicts else ""
+        )
+        if added == 0 and not conflicts:
             QMessageBox.information(
                 self, "Готово",
                 f"Распределение выполнено.\n"
@@ -1612,7 +1641,8 @@ class MainWindow(QWidget):
                 self, "Готово",
                 f"Распределение выполнено и записано в расписание.\n\n"
                 f"Добавлено занятий: {added}\n"
-                f"Пропущено дублей: {total - added}\n"
+                f"Пропущено дублей: {total - added - len(conflicts)}"
+                f"{conflict_msg}\n"
                 f"Преподаватель: «{teacher_name}»\n"
                 f"Использовано ячеек: {self._last_result.cells_used}"
             )
