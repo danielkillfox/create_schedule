@@ -96,6 +96,7 @@ class DB:
                 auditorium_id INTEGER NOT NULL,
                 kind          TEXT    NOT NULL DEFAULT 'lecture',
                 pair_number   INTEGER NOT NULL DEFAULT 1,
+                weekday       INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (teacher_id)    REFERENCES teachers(id)    ON DELETE CASCADE,
                 FOREIGN KEY (subject_id)    REFERENCES subjects(id)    ON DELETE SET NULL,
                 FOREIGN KEY (group_id)      REFERENCES groups(id)      ON DELETE CASCADE,
@@ -130,6 +131,10 @@ class DB:
         if "pair_number" not in cols("schedule"):
             self.c.execute(
                 "ALTER TABLE schedule ADD COLUMN pair_number INTEGER NOT NULL DEFAULT 1"
+            )
+        if "weekday" not in cols("schedule"):
+            self.c.execute(
+                "ALTER TABLE schedule ADD COLUMN weekday INTEGER NOT NULL DEFAULT 0"
             )
 
     # ==================== фууу ТРАНЗАКЦИИ ====================
@@ -399,13 +404,15 @@ class DB:
         subject_id: Optional[int],
         kind: str,
         assignments: list[tuple[int, int, int]],
+        weekday: int = 0,
     ) -> int:
         """
         ДОБАВЛЯЕТ занятия в расписание преподавателя (не перезаписывает).
 
-        assignments: список (group_id, auditorium_id, pair_number).
+        assignments: список (group_id, auditorium_id, pair_number)
+            или (group_id, auditorium_id, pair_number, weekday).
 
-        Точные дубли (тот же препод + предмет + тип + группа + аудитория + ячейка)
+        Точные дубли (тот же препод + предмет + тип + группа + аудитория + ячейка + день)
         пропускаются — чтобы повторное нажатие «Записать в расписание» не создавало
         копии. Всё остальное добавляется к уже существующему расписанию.
 
@@ -416,36 +423,47 @@ class DB:
         tid = int(teacher_id)
         sid = int(subject_id) if subject_id is not None else None
 
+        # Нормализуем assignments к (group, aud, pair, weekday)
+        normalized: list[tuple[int, int, int, int]] = []
+        for a in assignments:
+            if len(a) == 4:
+                g, au, p, w = a
+                normalized.append((int(g), int(au), int(p), int(w)))
+            else:
+                g, au, p = a
+                normalized.append((int(g), int(au), int(p), int(weekday)))
+
         with self._tx():
-            # Уже записанные тройки (group, aud, cell) для этого препод+предмет+тип
+            # Уже записанные тройки (group, aud, cell, weekday) для этого препод+предмет+тип
             if sid is None:
                 self.c.execute(
-                    "SELECT group_id, auditorium_id, pair_number FROM schedule "
+                    "SELECT group_id, auditorium_id, pair_number, weekday FROM schedule "
                     "WHERE teacher_id = ? AND kind = ? AND subject_id IS NULL",
                     (tid, kind),
                 )
             else:
                 self.c.execute(
-                    "SELECT group_id, auditorium_id, pair_number FROM schedule "
+                    "SELECT group_id, auditorium_id, pair_number, weekday FROM schedule "
                     "WHERE teacher_id = ? AND kind = ? AND subject_id = ?",
                     (tid, kind, sid),
                 )
             existing = {
-                (int(r["group_id"]), int(r["auditorium_id"]), int(r["pair_number"]))
+                (int(r["group_id"]), int(r["auditorium_id"]),
+                 int(r["pair_number"]), int(r["weekday"]))
                 for r in self.c.fetchall()
             }
 
             to_insert = [
-                (tid, sid, int(g), int(a), kind, int(p))
-                for (g, a, p) in assignments
-                if (int(g), int(a), int(p)) not in existing
+                (tid, sid, int(g), int(a), kind, int(p), int(w))
+                for (g, a, p, w) in normalized
+                if (int(g), int(a), int(p), int(w)) not in existing
             ]
 
             if to_insert:
                 self.c.executemany(
                     "INSERT INTO schedule "
-                    "(teacher_id, subject_id, group_id, auditorium_id, kind, pair_number) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "(teacher_id, subject_id, group_id, auditorium_id, kind, pair_number, weekday) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     to_insert,
                 )
 
@@ -453,7 +471,7 @@ class DB:
 
     def get_teacher_schedule(self, teacher_id: int) -> list[dict]:
         self.c.execute('''
-            SELECT s.id, s.kind, s.pair_number, s.subject_id,
+            SELECT s.id, s.kind, s.pair_number, s.weekday, s.subject_id,
                    sub.name AS subject_name,
                    g.name   AS group_name, g.students,
                    a.name   AS aud_name,   a.capacity
@@ -465,6 +483,19 @@ class DB:
             ORDER BY s.id
         ''', (int(teacher_id),))
         return [dict(r) for r in self.c.fetchall()]
+
+    def update_schedule_weekday(self, ids: list[int], weekday: int) -> None:
+        """Меняет день недели (0=Пн..4=Пт) для указанных строк расписания."""
+        if not ids:
+            return
+        weekday = int(weekday)
+        if weekday not in (0, 1, 2, 3, 4):
+            raise ValueError(f"Некорректный день недели: {weekday!r}")
+        with self._tx():
+            self.c.executemany(
+                "UPDATE schedule SET weekday = ? WHERE id = ?",
+                [(weekday, int(i)) for i in ids],
+            )
 
     def clear_teacher_schedule(self, teacher_id: int) -> None:
         with self._tx():

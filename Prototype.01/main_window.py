@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QFormLayout, QHBoxLayout,
+    QAbstractItemView, QCheckBox, QFileDialog, QFormLayout, QHBoxLayout,
     QHeaderView, QMessageBox, QPushButton, QSpinBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
     QProgressBar, QFrame, QLabel, QTabWidget, QComboBox, QGroupBox,
@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 from db import DB, KIND_LECTURE, KIND_PRACTICE
-from calendar_tab import CalendarTab
+from calendar_tab import CalendarTab, WEEKDAYS
 import distributor
 
 
@@ -40,6 +40,18 @@ class MainWindow(QWidget):
         layout.setSpacing(12)
         layout.setContentsMargins(16, 16, 16, 16)
 
+        excel_bar = QHBoxLayout()
+        excel_bar.addStretch(1)
+        self.btn_export_excel = QPushButton("Экспорт в Excel")
+        self.btn_export_excel.setToolTip("Выгрузить все данные в файл .xlsx")
+        self.btn_export_excel.clicked.connect(self.export_excel)
+        excel_bar.addWidget(self.btn_export_excel)
+        self.btn_import_excel = QPushButton("Импорт из Excel")
+        self.btn_import_excel.setToolTip("Загрузить данные из файла .xlsx")
+        self.btn_import_excel.clicked.connect(self.import_excel)
+        excel_bar.addWidget(self.btn_import_excel)
+        layout.addLayout(excel_bar)
+
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
@@ -57,7 +69,7 @@ class MainWindow(QWidget):
         self.tabs.addTab(self.tab_subjects, "4. Предметы")
         self.tabs.addTab(self.tab_distribute, "5. Распределение")
         self.tabs.addTab(self.tab_schedule, "6. Расписание")
-        self.tabs.addTab(self.tab_calendar, "7. Календарь")
+        self.tabs.addTab(self.tab_calendar, "7. Таблица")
 
         self._build_groups_tab()
         self._build_auds_tab()
@@ -121,7 +133,7 @@ class MainWindow(QWidget):
         del_btn = QPushButton("Удалить выбранную")
         del_btn.clicked.connect(self.delete_selected_group)
         reload_btn = QPushButton("Обновить из БД")
-        reload_btn.clicked.connect(self.reload_groups)
+        reload_btn.clicked.connect(self.refresh_groups_ui)
         clear_btn = QPushButton("Очистить все группы")
         clear_btn.clicked.connect(self.clear_groups)
         btns.addWidget(del_btn)
@@ -142,6 +154,11 @@ class MainWindow(QWidget):
                 self.table.setItem(r, 1, QTableWidgetItem(str(g["students"])))
                 self.table.setItem(r, 2, QTableWidgetItem(str(g["course"])))
             self.table.clearSelection()
+
+    def refresh_groups_ui(self):
+        self.reload_groups()
+        if hasattr(self, "course_combo"):
+            self.reload_courses()
 
     def on_group_item_changed(self, item):
 
@@ -286,7 +303,7 @@ class MainWindow(QWidget):
         del_btn = QPushButton("Удалить выбранную")
         del_btn.clicked.connect(self.delete_selected_aud)
         reload_btn = QPushButton("Обновить из БД")
-        reload_btn.clicked.connect(self.reload_auditoriums)
+        reload_btn.clicked.connect(self.refresh_auds_ui)
         clear_btn = QPushButton("Очистить все аудитории")
         clear_btn.clicked.connect(self.clear_auditoriums)
         btns.addWidget(del_btn)
@@ -315,6 +332,12 @@ class MainWindow(QWidget):
                 )
                 self.aud_table.setCellWidget(r, 2, combo)
             self.aud_table.clearSelection()
+
+    def refresh_auds_ui(self):
+        self.reload_auditoriums()
+        self._reload_aud_for_teacher_combo()
+        if hasattr(self, "summary_label"):
+            self.on_course_changed()
 
     def _on_aud_kind_changed(self, aid, kind):
         try:
@@ -518,6 +541,9 @@ class MainWindow(QWidget):
         self.teacher_auds_table.setRowCount(0)
         self._reload_subj_for_teacher_combo()
         self._reload_aud_for_teacher_combo()
+        # Обновляем вкладку 5: новый преподаватель должен появиться в комбобоксе
+        if hasattr(self, "subject_combo"):
+            self.on_subject_changed()
 
     def _reload_subj_for_teacher_combo(self):
         self.subj_for_teacher_combo.clear()
@@ -758,6 +784,9 @@ class MainWindow(QWidget):
             self.subjects_table.clearSelection()
         self.subject_courses_table.setRowCount(0)
         self._reload_subj_for_teacher_combo()
+        # Обновляем вкладку 5: новый предмет должен появиться в комбобоксе
+        if hasattr(self, "course_combo"):
+            self.on_course_changed()
 
     def on_subject_selected(self):
         with signals_blocked(self.subject_courses_table):
@@ -876,6 +905,13 @@ class MainWindow(QWidget):
         form.addRow(QLabel("Предмет:"), self.subject_combo)
         form.addRow(QLabel("Преподаватель:"), self.teacher_combo)
         form.addRow(QLabel("Тип занятия:"), self.kind_combo)
+        self.max2_checkbox = QCheckBox("Не больше 2 лекций в день")
+        self.max2_checkbox.setToolTip(
+            "При генерации лекции преподавателя раскладываются по дням Пн–Пт "
+            "так, чтобы в один день было не больше 2 лекций "
+            "(учитывается уже записанное расписание). Действует только для лекций."
+        )
+        form.addRow(QLabel("Фильтр:"), self.max2_checkbox)
         sel_box.setLayout(form)
         v.addWidget(sel_box)
 
@@ -883,6 +919,7 @@ class MainWindow(QWidget):
         self.subject_combo.currentIndexChanged.connect(self.on_subject_changed)
         self.teacher_combo.currentIndexChanged.connect(self.on_teacher_for_dist_changed)
         self.kind_combo.currentIndexChanged.connect(self.on_kind_changed)
+        self.max2_checkbox.toggled.connect(self.on_max2_changed)
 
         gbox = QGroupBox("Группы")
         gv = QVBoxLayout()
@@ -977,30 +1014,51 @@ class MainWindow(QWidget):
         v.addWidget(rbox)
 
     def reload_courses(self):
+        prev_course = self.course_combo.currentData()
+        prev_subject = self.subject_combo.currentData()
         with signals_blocked(self.course_combo):
             self.course_combo.clear()
             courses = sorted({g["course"] for g in self.db.get_groups()})
             for n in courses:
                 self.course_combo.addItem(f"{n} курс", int(n))
-        self.on_course_changed()
+            if not courses:
+                self.course_combo.addItem("— нет групп —", None)
+            elif prev_course is not None:
+                idx = self.course_combo.findData(int(prev_course))
+                if idx >= 0:
+                    self.course_combo.setCurrentIndex(idx)
+        self.on_course_changed(keep_subject=prev_subject)
 
-    def on_course_changed(self):
+    def on_course_changed(self, _idx=None, keep_subject=None):
         course = self.course_combo.currentData()
         if course is None:
             with signals_blocked(self.subject_combo):
                 self.subject_combo.clear()
+                self.subject_combo.addItem("— нет предметов —", None)
             with signals_blocked(self.teacher_combo):
                 self.teacher_combo.clear()
+                self.teacher_combo.addItem("— не выбран —", None)
             self.groups_preview.setRowCount(0)
             self.summary_label.setText("")
-            self.text_result.clear()
+            self.text_result.setText(
+                "Нет групп. Добавьте группы на вкладке «1. Группы»."
+            )
             self.table_result.setRowCount(0)
+            self._show_result_text()
             return
 
+        prev_sid = keep_subject if keep_subject is not None else self.subject_combo.currentData()
         with signals_blocked(self.subject_combo):
             self.subject_combo.clear()
-            for s in self.db.get_course_subjects(int(course)):
+            subjects = self.db.get_course_subjects(int(course))
+            for s in subjects:
                 self.subject_combo.addItem(str(s["name"]), int(s["id"]))
+            if not subjects:
+                self.subject_combo.addItem("— нет предметов у курса —", None)
+            elif prev_sid is not None:
+                idx = self.subject_combo.findData(int(prev_sid))
+                if idx >= 0:
+                    self.subject_combo.setCurrentIndex(idx)
 
         with signals_blocked(self.groups_preview):
             self.groups_preview.setRowCount(0)
@@ -1022,14 +1080,21 @@ class MainWindow(QWidget):
 
         self.on_subject_changed()
 
-    def on_subject_changed(self):
+    def on_subject_changed(self, _idx=None, keep_teacher=None):
         sid = self.subject_combo.currentData()
+        prev_tid = keep_teacher if keep_teacher is not None else self.teacher_combo.currentData()
+        teachers: list[dict] = []
+        if sid is not None:
+            teachers = self.db.get_teachers_of_subject(int(sid))
         with signals_blocked(self.teacher_combo):
             self.teacher_combo.clear()
             self.teacher_combo.addItem("— не выбран —", None)
-            if sid is not None:
-                for t in self.db.get_teachers_of_subject(int(sid)):
-                    self.teacher_combo.addItem(str(t["name"]), int(t["id"]))
+            for t in teachers:
+                self.teacher_combo.addItem(str(t["name"]), int(t["id"]))
+            if prev_tid is not None:
+                idx = self.teacher_combo.findData(int(prev_tid))
+                if idx >= 0:
+                    self.teacher_combo.setCurrentIndex(idx)
 
         self._last_context = None
         self._last_result = None
@@ -1041,6 +1106,7 @@ class MainWindow(QWidget):
             )
             self.table_result.setRowCount(0)
             self._refresh_auditorium_summary()
+            self._show_result_text()
             return
 
         saved = self.db.load_distribution(int(sid))
@@ -1062,8 +1128,15 @@ class MainWindow(QWidget):
                 f"Для предмета «{self.subject_combo.currentText()}» распределения ещё нет.\n"
                 f"Настройте параметры и нажмите «Распределить по парам»."
             )
+        if not teachers:
+            self.text_result.setText(
+                self.text_result.toPlainText()
+                + "\n\nК предмету не привязан ни один преподаватель.\n"
+                + "Откройте вкладку «3. Преподаватели» и нажмите «Привязать»."
+            )
         self.table_result.setRowCount(0)
         self._refresh_auditorium_summary()
+        self._show_result_text()
 
     def on_teacher_for_dist_changed(self):
         self._last_context = None
@@ -1071,6 +1144,16 @@ class MainWindow(QWidget):
         self._refresh_auditorium_summary()
 
     def on_kind_changed(self):
+        self._last_context = None
+        self._last_result = None
+        if hasattr(self, "max2_checkbox"):
+            is_lecture = self.kind_combo.currentData() == KIND_LECTURE
+            self.max2_checkbox.setEnabled(is_lecture)
+            if not is_lecture:
+                self.max2_checkbox.setChecked(False)
+        self._refresh_auditorium_summary()
+
+    def on_max2_changed(self):
         self._last_context = None
         self._last_result = None
         self._refresh_auditorium_summary()
@@ -1111,15 +1194,121 @@ class MainWindow(QWidget):
         self.summary_label.setText(
             f"Групп выбрано: {checked} из {total}  ·  "
             f"Аудиторий типа «{KIND_LABELS[kind]}»: {len(by_kind)}{note}{cells_hint}"
+            f"{self._day_loads_hint(teacher_id, kind)}"
         )
 
+    def _day_loads_hint(self, teacher_id, kind) -> str:
+        """Подсказка для фильтра: сколько лекций уже стоит у препода по дням."""
+        if not getattr(self, "max2_checkbox", None):
+            return ""
+        if not self.max2_checkbox.isChecked() or kind != KIND_LECTURE:
+            return ""
+        if teacher_id is None:
+            return "  ·  фильтр: выберите преподавателя"
+        try:
+            rows = self.db.get_teacher_schedule(int(teacher_id))
+        except Exception:
+            return ""
+        loads = [0] * 5
+        for r in rows:
+            if r.get("kind") != KIND_LECTURE:
+                continue
+            try:
+                w = int(r.get("weekday", 0) or 0)
+            except (TypeError, ValueError):
+                w = 0
+            if 0 <= w <= 4:
+                loads[w] += 1
+        return "  ·  лекций по дням Пн–Пт: " + "/".join(str(n) for n in loads)
+
+    def _show_result_text(self):
+        self.text_result.setVisible(True)
+        self.table_result.setVisible(False)
+        self.toggle_btn.setText("Показать таблицу")
+
+    def _show_result_table(self):
+        self.text_result.setVisible(False)
+        self.table_result.setVisible(True)
+        self.toggle_btn.setText("Показать текст")
+
     def toggle_result_mode(self):
-        showing_table = self.table_result.isVisible()
-        self.text_result.setVisible(showing_table)
-        self.table_result.setVisible(not showing_table)
-        self.toggle_btn.setText(
-            "Показать таблицу" if showing_table else "Показать текст"
-        )
+        if self.table_result.isVisible():
+            self._show_result_text()
+        else:
+            self._show_result_table()
+
+    MAX_LECTURES_PER_DAY = 2
+
+    def _apply_max2_per_day(
+        self, result: distributor.DistributionResult, teacher_id: int
+    ) -> tuple[str, str]:
+        """Раскладывает result.placed по дням Пн–Пт (поле weekday).
+
+        Учитывает уже записанные лекции преподавателя: в один день суммарно
+        (старые + новые) должно быть не больше MAX_LECTURES_PER_DAY лекций.
+        Группы, которым не хватило места в лимите, переносятся в not_placed.
+        Возвращает (limit_note, pair_busy_note) для отчёта.
+        """
+        existing = self.db.get_teacher_schedule(int(teacher_id))
+        loads = [0] * 5
+        occupied: dict[int, set[int]] = {w: set() for w in range(5)}
+        for r in existing:
+            try:
+                w = int(r.get("weekday", 0) or 0)
+            except (TypeError, ValueError):
+                w = 0
+            if not 0 <= w <= 4:
+                continue
+            try:
+                p = int(r.get("pair_number", 0) or 0)
+            except (TypeError, ValueError):
+                p = 0
+            if p:
+                occupied[w].add(p)
+            if r.get("kind") == KIND_LECTURE:
+                loads[w] += 1
+
+        overflow: list[distributor.Group] = []
+        pair_busy = 0
+        kept: list[distributor.PlacedGroup] = []
+        for p in result.placed:
+            days_by_load = sorted(range(5), key=lambda w: (loads[w], w))
+            chosen = None
+            for w in days_by_load:
+                if loads[w] < self.MAX_LECTURES_PER_DAY and p.cell not in occupied[w]:
+                    chosen = w
+                    break
+            if chosen is None:
+                for w in days_by_load:
+                    if loads[w] < self.MAX_LECTURES_PER_DAY:
+                        chosen = w
+                        pair_busy += 1
+                        break
+            if chosen is None:
+                overflow.append(p.group)
+                continue
+            p.weekday = chosen
+            loads[chosen] += 1
+            occupied[chosen].add(p.cell)
+            kept.append(p)
+
+        result.placed = kept
+        result.not_placed = list(result.not_placed) + overflow
+
+        limit_note = ""
+        if overflow:
+            names = ", ".join(g.name for g in overflow)
+            limit_note = (
+                f"Лимит «не больше {self.MAX_LECTURES_PER_DAY} лекций в день»: "
+                f"не поместились ({len(overflow)}): {names}"
+            )
+        pair_busy_note = ""
+        if pair_busy:
+            pair_busy_note = (
+                f"Внимание: {pair_busy} зан. поставлены на пару, "
+                f"уже занятую у преподавателя в этот день."
+            )
+        return limit_note, pair_busy_note
 
     def distribute(self, silent: bool = False) -> bool:
         course = self.course_combo.currentData()
@@ -1174,12 +1363,32 @@ class MainWindow(QWidget):
             time_per_cell=1.0,
         )
 
+        use_max2 = (
+            getattr(self, "max2_checkbox", None) is not None
+            and self.max2_checkbox.isChecked()
+            and kind == KIND_LECTURE
+        )
+        limit_note = ""
+        pair_busy_note = ""
+        if use_max2:
+            if teacher_id is None:
+                if not silent:
+                    QMessageBox.warning(
+                        self, "Ошибка",
+                        "Для фильтра «Не больше 2 лекций в день» выберите преподавателя."
+                    )
+                return False
+            limit_note, pair_busy_note = self._apply_max2_per_day(result, int(teacher_id))
+
         self._last_result = result
         self._last_context = {
             "course": int(course),
             "subject_id": int(subject_id),
             "teacher_id": int(teacher_id) if teacher_id is not None else None,
             "kind": kind,
+            "with_days": use_max2,
+            "limit_note": limit_note,
+            "pair_busy_note": pair_busy_note,
         }
 
         assignments = [(p.group.id, p.auditorium.id, p.cell) for p in result.placed]
@@ -1196,6 +1405,7 @@ class MainWindow(QWidget):
     def _render_text_result(self, course: int, result: distributor.DistributionResult):
         ctx = self._last_context or {}
         kind = ctx.get("kind", KIND_LECTURE)
+        with_days = bool(ctx.get("with_days"))
         teacher_name = self.teacher_combo.currentText() if self.teacher_combo.currentData() else "—"
 
         total_groups = len(result.placed) + len(result.not_placed)
@@ -1207,40 +1417,73 @@ class MainWindow(QWidget):
             f"Использовано ячеек: {result.cells_used}",
             f"Всего человек: {result.total_people}",
         ]
-
-        cells = result.cells()
-        for cell in sorted({c for (c, _a) in cells}):
-            lines.append("")
-            lines.append(f"Ячейка {cell}:")
-            cell_cells = sorted(
-                [(aid, lst) for (c, aid), lst in cells.items() if c == cell],
-                key=lambda kv: kv[1][0].auditorium.name,
+        if with_days:
+            lines.append(
+                f"Фильтр: не больше {self.MAX_LECTURES_PER_DAY} лекций в день — вкл."
             )
-            for _aid, lst in cell_cells:
-                aud = lst[0].auditorium
-                people = sum(x.group.students for x in lst)
-                free = aud.capacity - people
-                names = ", ".join(f"{x.group.name} ({x.group.students})" for x in lst)
-                lines.append(
-                    f"  {aud.name} [{people}/{aud.capacity}, свободно {free}]: {names}"
+
+        if with_days:
+            slots: dict[tuple[int, int], list[distributor.PlacedGroup]] = {}
+            for p in result.placed:
+                slots.setdefault((p.weekday, p.cell), []).append(p)
+            for (w, cell) in sorted(slots):
+                lines.append("")
+                lines.append(f"{WEEKDAYS[w]} · Пара {cell}:")
+                for p in sorted(slots[(w, cell)], key=lambda x: x.auditorium.name):
+                    aud = p.auditorium
+                    lines.append(
+                        f"  {aud.name} [{p.group.students}/{aud.capacity}]: "
+                        f"{p.group.name} ({p.group.students} чел.)"
+                    )
+        else:
+            cells = result.cells()
+            for cell in sorted({c for (c, _a) in cells}):
+                lines.append("")
+                lines.append(f"Ячейка {cell}:")
+                cell_cells = sorted(
+                    [(aid, lst) for (c, aid), lst in cells.items() if c == cell],
+                    key=lambda kv: kv[1][0].auditorium.name,
                 )
+                for _aid, lst in cell_cells:
+                    aud = lst[0].auditorium
+                    people = sum(x.group.students for x in lst)
+                    free = aud.capacity - people
+                    names = ", ".join(f"{x.group.name} ({x.group.students})" for x in lst)
+                    lines.append(
+                        f"  {aud.name} [{people}/{aud.capacity}, свободно {free}]: {names}"
+                    )
 
         if result.not_placed:
             lines.append("")
-            lines.append("!!! НЕ ПОМЕСТИЛИСЬ (не хватило ячеек) !!!")
+            if ctx.get("limit_note"):
+                lines.append(ctx["limit_note"])
+            else:
+                lines.append("!!! НЕ ПОМЕСТИЛИСЬ (не хватило ячеек) !!!")
             for g in result.not_placed:
                 lines.append(f"- {g.name} ({g.students} чел.)")
+        if ctx.get("pair_busy_note"):
+            lines.append("")
+            lines.append(ctx["pair_busy_note"])
 
         self.text_result.setText("\n".join(lines))
 
     def _render_table_result(self, result: distributor.DistributionResult):
+        ctx = self._last_context or {}
+        with_days = bool(ctx.get("with_days"))
         self.table_result.setRowCount(0)
-        cells = result.cells()
+        # Группируем по (пара, аудитория, день), чтобы дни не сливались в одну строку
+        grouped: dict[tuple[int, int, int], list[distributor.PlacedGroup]] = {}
+        for p in result.placed:
+            grouped.setdefault((p.cell, p.auditorium.id, p.weekday), []).append(p)
         ordered = sorted(
-            cells.items(),
-            key=lambda kv: (kv[0][0], kv[1][0].auditorium.name),
+            grouped.items(),
+            key=lambda kv: (
+                kv[0][2] if with_days else 0,
+                kv[0][0],
+                kv[1][0].auditorium.name,
+            ),
         )
-        for (_cell, _aid), lst in ordered:
+        for (_cell, _aid, _w), lst in ordered:
             cell = lst[0].cell
             aud = lst[0].auditorium
             people = sum(x.group.students for x in lst)
@@ -1249,7 +1492,8 @@ class MainWindow(QWidget):
 
             row = self.table_result.rowCount()
             self.table_result.insertRow(row)
-            self.table_result.setItem(row, 0, QTableWidgetItem(str(cell)))
+            cell_text = f"{cell} · {WEEKDAYS[_w]}" if with_days else str(cell)
+            self.table_result.setItem(row, 0, QTableWidgetItem(cell_text))
             self.table_result.setItem(row, 1, QTableWidgetItem(aud.name))
             self.table_result.setItem(row, 2, QTableWidgetItem(names))
             self.table_result.setItem(row, 3, QTableWidgetItem(str(people)))
@@ -1275,6 +1519,8 @@ class MainWindow(QWidget):
             self.table_result.setItem(row, 0, item)
             self.table_result.setSpan(row, 0, 1, 6)
 
+        self._show_result_table()
+
     def write_to_schedule(self, silent: bool = False):
         if self._last_result is None or self._last_context is None:
             if not silent:
@@ -1294,7 +1540,10 @@ class MainWindow(QWidget):
                 )
             return (None, None)
 
-        assignments = [(p.group.id, p.auditorium.id, p.cell) for p in self._last_result.placed]
+        assignments = [
+            (p.group.id, p.auditorium.id, p.cell, int(p.weekday))
+            for p in self._last_result.placed
+        ]
         if not assignments:
             if not silent:
                 QMessageBox.warning(self, "Ошибка", "Нечего записывать: ни одна группа не размещена.")
@@ -1397,13 +1646,21 @@ class MainWindow(QWidget):
         clear_btn.clicked.connect(self.clear_current_teacher_schedule)
         btns.addWidget(clear_btn)
 
+        to_table_btn = QPushButton("➡ В таблицу (7)")
+        to_table_btn.setStyleSheet(
+            "QPushButton { font-weight: bold; background-color: #2e7d32; }"
+            "QPushButton:hover { background-color: #388e3c; }"
+        )
+        to_table_btn.clicked.connect(self.transfer_to_timetable)
+        btns.addWidget(to_table_btn)
+
         btns.addStretch()
         v.addLayout(btns)
 
         v.addWidget(QLabel("Расписание"))
-        self.schedule_table = QTableWidget(0, 5)
+        self.schedule_table = QTableWidget(0, 6)
         self.schedule_table.setHorizontalHeaderLabels(
-            ["Предмет", "Тип", "Ячейка", "Группа", "Аудитория"]
+            ["Предмет", "Тип", "Ячейка", "Группа", "Аудитория", "День"]
         )
         hh = self.schedule_table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -1411,8 +1668,10 @@ class MainWindow(QWidget):
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         self.schedule_table.setColumnWidth(1, 100)
         self.schedule_table.setColumnWidth(2, 90)
+        self.schedule_table.setColumnWidth(5, 90)
         self.schedule_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.schedule_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -1439,6 +1698,12 @@ class MainWindow(QWidget):
                 if idx >= 0:
                     self.schedule_teacher_combo.setCurrentIndex(idx)
         self.on_schedule_teacher_changed()
+        # Синхронизируем список преподавателей на вкладке 7
+        if hasattr(self, "tab_calendar"):
+            try:
+                self.tab_calendar.reload_teachers()
+            except Exception:
+                pass
 
     def on_schedule_teacher_changed(self):
         tid = self.schedule_teacher_combo.currentData()
@@ -1479,23 +1744,30 @@ class MainWindow(QWidget):
                         self.schedule_table.setItem(sep, c, item)
                     sep_rows.append(sep)
 
-                # Внутри блока — группировка по (subject, kind, cell, aud)
+                # Внутри блока — группировка по (subject, kind, cell, aud, weekday)
                 grouped: dict[tuple, list[dict]] = {}
                 for r in block:
+                    try:
+                        w = int(r.get("weekday", 0) or 0)
+                    except (TypeError, ValueError):
+                        w = 0
+                    if w not in (0, 1, 2, 3, 4):
+                        w = 0
                     k = (
                         r["subject_name"] or "—",
                         r["kind"],
                         r["pair_number"],
                         r["aud_name"],
+                        w,
                     )
                     grouped.setdefault(k, []).append(r)
 
                 ordered = sorted(
                     grouped.items(),
-                    key=lambda kv: (kv[0][2], kv[0][3]),  # по ячейке, потом по аудитории
+                    key=lambda kv: (kv[0][4], kv[0][2], kv[0][3]),  # по дню, ячейке, аудитории
                 )
 
-                for (subject, kind, cell, aud_name), items in ordered:
+                for (subject, kind, cell, aud_name, weekday), items in ordered:
                     items_sorted = sorted(items, key=lambda it: it["group_name"])
                     groups_str = ", ".join(
                         f"{it['group_name']} ({it['students']} чел.)"
@@ -1519,6 +1791,19 @@ class MainWindow(QWidget):
                     self.schedule_table.setItem(r, 3, item_grp)
                     self.schedule_table.setItem(r, 4, item_aud)
 
+                    day_combo = QComboBox()
+                    for i, dname in enumerate(WEEKDAYS):
+                        day_combo.addItem(dname, i)
+                    idx = day_combo.findData(int(weekday))
+                    if idx >= 0:
+                        day_combo.setCurrentIndex(idx)
+                    day_combo.currentIndexChanged.connect(
+                        lambda _i, _ids=list(ids), _c=day_combo: self._on_schedule_day_changed(
+                            _ids, _c.currentData()
+                        )
+                    )
+                    self.schedule_table.setCellWidget(r, 5, day_combo)
+
             # ---- 3. Подгоняем высоту строк ----
             self.schedule_table.resizeRowsToContents()
             for r in range(self.schedule_table.rowCount()):
@@ -1527,6 +1812,38 @@ class MainWindow(QWidget):
                 else:
                     cur = self.schedule_table.rowHeight(r)
                     self.schedule_table.setRowHeight(r, max(cur, 34))
+
+    def _on_schedule_day_changed(self, ids: list[int], weekday):
+        if weekday is None:
+            return
+        try:
+            self.db.update_schedule_weekday([int(i) for i in ids], int(weekday))
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка БД", str(e))
+            self.on_schedule_teacher_changed()
+            return
+        # Живьём обновляем 7 вкладку, если там выбран тот же преподаватель
+        try:
+            tid = self.schedule_teacher_combo.currentData()
+            if tid is not None and hasattr(self, "tab_calendar"):
+                if self.tab_calendar.current_teacher_id() == int(tid):
+                    self.tab_calendar.render()
+        except Exception:
+            pass
+
+    def transfer_to_timetable(self):
+        """Кнопка на вкладке 6: показать данные текущего преподавателя на вкладке 7."""
+        tid = self.schedule_teacher_combo.currentData()
+        if tid is None:
+            QMessageBox.warning(self, "Ошибка", "Выберите преподавателя.")
+            return
+        try:
+            self.tab_calendar.reload_teachers(keep_id=int(tid))
+            self.tab_calendar.set_teacher(int(tid))
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", str(e))
+            return
+        self.tabs.setCurrentWidget(self.tab_calendar)
 
     def delete_selected_schedule_rows(self):
         ids: set[int] = set()
@@ -1580,6 +1897,64 @@ class MainWindow(QWidget):
             return
         self.on_schedule_teacher_changed()
 
+
+    # ЭКСПОРТ / ИМПОРТ EXCEL
+
+    def _refresh_all_tabs(self):
+        self.reload_groups()
+        self.reload_auditoriums()
+        self.reload_teachers()
+        self.reload_subjects()
+        self.reload_courses()
+        self.reload_schedule_teachers()
+        if hasattr(self, "tab_calendar"):
+            try:
+                self.tab_calendar.reload_teachers()
+            except Exception:
+                pass
+
+    def export_excel(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Экспорт в Excel", "schedule_export.xlsx",
+            "Excel (*.xlsx)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            from excel_io import export_to_excel
+            stats = export_to_excel(self.db, path)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка экспорта", str(e))
+            return
+        details = "\n".join(f"{k}: {v}" for k, v in stats.items())
+        QMessageBox.information(self, "Экспорт готов", f"Файл сохранён:\n{path}\n\n{details}")
+
+    def import_excel(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Импорт из Excel", "",
+            "Excel (*.xlsx)",
+        )
+        if not path:
+            return
+        try:
+            from excel_io import import_from_excel
+            result = import_from_excel(self.db, path)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка импорта", str(e))
+            return
+        self._refresh_all_tabs()
+        lines = []
+        for k, v in result["added"].items():
+            lines.append(f"{k}: добавлено {v}")
+        for k, v in result["updated"].items():
+            lines.append(f"{k}: обновлено {v}")
+        report = "\n".join(lines) if lines else "Новых данных нет."
+        errors = result["errors"]
+        if errors:
+            report += f"\n\nОшибок в строках: {len(errors)} (первые 10):\n" + "\n".join(errors[:10])
+        QMessageBox.information(self, "Импорт завершён", report)
 
     # ЗАКРЫТИЕ
 

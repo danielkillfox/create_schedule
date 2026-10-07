@@ -42,6 +42,7 @@ class PlacedGroup:
     group: Group
     auditorium: Auditorium
     cell: int     # номер ячейки (1..MAX_CELLS)
+    weekday: int = 0  # день недели 0=Пн..4=Пт (назначает планировщик вкладки 5)
 
 
 @dataclass
