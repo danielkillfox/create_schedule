@@ -38,13 +38,38 @@ def api_request(method, path, data=None):
         raise RuntimeError("Сервер недоступен") from exc
 
 
+NO_VALUE = "— не выбрано —"
+SUBJECT_COLORS = [
+    "#bbdefb", "#c8e6c9", "#fff9c4", "#f8bbd0",
+    "#e1bee7", "#ffccbc", "#b2ebf2", "#ffe0b2",
+]
+
+
+def _initial_index(items, item_id):
+    if item_id is None:
+        return 0
+    for index, item in enumerate(items, start=1):
+        if item["id"] == item_id:
+            return index
+    return 0
+
+
+def _entry_color(subject_id):
+    if subject_id is None:
+        return "#eceff1"
+    return SUBJECT_COLORS[(subject_id - 1) % len(SUBJECT_COLORS)]
+
+
 class GroupSelectModal(tk.Toplevel):
-    def __init__(self, master, day_date, groups, assigned_ids, on_save):
+    def __init__(self, master, day_date, groups, assigned_ids,
+                 subjects, teachers, initial, on_save):
         super().__init__(master)
         self.title(f"Занятия на {day_date.strftime('%d.%m.%Y')}")
         self.resizable(False, False)
         self.on_save = on_save
         self.day_date = day_date
+        self.subjects = subjects
+        self.teachers = teachers
         self.vars = {}
 
         ttk.Label(self, text="Выберите группы:").pack(anchor="w", padx=12, pady=(12, 4))
@@ -64,8 +89,23 @@ class GroupSelectModal(tk.Toplevel):
             ).pack(anchor="w", pady=2)
 
         ttk.Label(self, text="Предмет:").pack(anchor="w", padx=12, pady=(10, 2))
-        self.subject_entry = ttk.Entry(self, width=32)
-        self.subject_entry.pack(fill="x", padx=12)
+        self.subject_combo = ttk.Combobox(self, state="readonly", width=34)
+        self.subject_combo["values"] = [NO_VALUE] + [s["name"] for s in subjects]
+        self.subject_combo.current(_initial_index(subjects, initial.get("subject_id")))
+        self.subject_combo.pack(fill="x", padx=12)
+
+        ttk.Label(self, text="Преподаватель:").pack(anchor="w", padx=12, pady=(10, 2))
+        self.teacher_combo = ttk.Combobox(self, state="readonly", width=34)
+        self.teacher_combo["values"] = [NO_VALUE] + [t["name"] for t in teachers]
+        self.teacher_combo.current(_initial_index(teachers, initial.get("teacher_id")))
+        self.teacher_combo.pack(fill="x", padx=12)
+
+        if not subjects:
+            ttk.Label(self, text="Нет предметов — добавьте их в справочнике",
+                      foreground="#b71c1c").pack(anchor="w", padx=12, pady=(6, 0))
+        if not teachers:
+            ttk.Label(self, text="Нет преподавателей — добавьте их в справочнике",
+                      foreground="#b71c1c").pack(anchor="w", padx=12, pady=(4, 0))
 
         buttons = ttk.Frame(self)
         buttons.pack(fill="x", padx=12, pady=12)
@@ -79,6 +119,14 @@ class GroupSelectModal(tk.Toplevel):
 
     def save(self):
         group_ids = [gid for gid, var in self.vars.items() if var.get()]
+        subject_index = self.subject_combo.current()
+        teacher_index = self.teacher_combo.current()
+        subject_id = (
+            self.subjects[subject_index - 1]["id"] if subject_index > 0 else None
+        )
+        teacher_id = (
+            self.teachers[teacher_index - 1]["id"] if teacher_index > 0 else None
+        )
         try:
             api_request(
                 "POST",
@@ -86,7 +134,8 @@ class GroupSelectModal(tk.Toplevel):
                 {
                     "date": self.day_date.isoformat(),
                     "group_ids": group_ids,
-                    "subject": self.subject_entry.get().strip(),
+                    "subject_id": subject_id,
+                    "teacher_id": teacher_id,
                 },
             )
         except RuntimeError as exc:
@@ -99,53 +148,110 @@ class GroupSelectModal(tk.Toplevel):
 class StudentsWindow(tk.Toplevel):
     def __init__(self, master):
         super().__init__(master)
-        self.title("Студенты и группы")
-        self.geometry("460x480")
+        self.title("Справочники")
+        self.geometry("520x540")
         self.groups = []
+        self.subjects = []
+        self.teachers = []
 
-        top = ttk.LabelFrame(self, text="Добавить группу")
-        top.pack(fill="x", padx=10, pady=(10, 5))
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill="both", expand=True, padx=8, pady=8)
+
+        self.students_tab = ttk.Frame(notebook)
+        self.subjects_tab = ttk.Frame(notebook)
+        self.teachers_tab = ttk.Frame(notebook)
+        notebook.add(self.students_tab, text="Студенты")
+        notebook.add(self.subjects_tab, text="Предметы")
+        notebook.add(self.teachers_tab, text="Преподаватели")
+
+        self._build_students_tab()
+        self._build_subjects_tab()
+        self._build_teachers_tab()
+
+        self.transient(master)
+        self.reload()
+
+    def _build_students_tab(self):
+        top = ttk.LabelFrame(self.students_tab, text="Добавить группу")
+        top.pack(fill="x", padx=8, pady=(8, 4))
         self.group_entry = ttk.Entry(top)
         self.group_entry.pack(side="left", fill="x", expand=True, padx=(8, 4), pady=8)
         ttk.Button(top, text="Добавить", command=self.add_group).pack(side="right", padx=8, pady=8)
 
-        mid = ttk.LabelFrame(self, text="Добавить студента")
-        mid.pack(fill="x", padx=10, pady=5)
+        mid = ttk.LabelFrame(self.students_tab, text="Добавить студента")
+        mid.pack(fill="x", padx=8, pady=4)
         self.student_entry = ttk.Entry(mid)
         self.student_entry.pack(side="left", fill="x", expand=True, padx=(8, 4), pady=8)
         self.group_combo = ttk.Combobox(mid, state="readonly", width=18)
         self.group_combo.pack(side="left", pady=8)
         ttk.Button(mid, text="Добавить", command=self.add_student).pack(side="right", padx=8, pady=8)
 
-        bottom = ttk.LabelFrame(self, text="Все студенты")
-        bottom.pack(fill="both", expand=True, padx=10, pady=(5, 10))
+        bottom = ttk.LabelFrame(self.students_tab, text="Все студенты")
+        bottom.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
         columns = ("name", "group")
         self.tree = ttk.Treeview(bottom, columns=columns, show="headings", selectmode="browse")
         self.tree.heading("name", text="Студент")
         self.tree.heading("group", text="Группа")
-        self.tree.column("name", width=220)
-        self.tree.column("group", width=160)
+        self.tree.column("name", width=240)
+        self.tree.column("group", width=170)
         self.tree.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
 
         scroll = ttk.Scrollbar(bottom, orient="vertical", command=self.tree.yview)
         scroll.pack(side="right", fill="y", pady=8)
         self.tree.configure(yscrollcommand=scroll.set)
 
-        ttk.Button(self, text="Удалить выбранного", command=self.delete_student).pack(pady=(0, 10))
-
+        ttk.Button(self.students_tab, text="Удалить выбранного",
+                   command=self.delete_student).pack(pady=(0, 8))
         self.tree.bind("<Double-1>", lambda event: self.delete_student())
-        self.transient(master)
-        self.reload()
+
+    def _build_list_tab(self, tab, title, entries, add_command, delete_command,
+                        entry_attr, list_attr):
+        top = ttk.LabelFrame(tab, text=title)
+        top.pack(fill="x", padx=8, pady=(8, 4))
+        field = ttk.Entry(top)
+        field.pack(side="left", fill="x", expand=True, padx=(8, 4), pady=8)
+        ttk.Button(top, text="Добавить", command=add_command).pack(side="right", padx=8, pady=8)
+        setattr(self, entry_attr, field)
+
+        bottom = ttk.LabelFrame(tab, text=entries)
+        bottom.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+
+        listbox = tk.Listbox(bottom, font=("Segoe UI", 10))
+        listbox.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
+        setattr(self, list_attr, listbox)
+
+        scroll = ttk.Scrollbar(bottom, orient="vertical", command=listbox.yview)
+        scroll.pack(side="right", fill="y", pady=8)
+        listbox.configure(yscrollcommand=scroll.set)
+
+        ttk.Button(tab, text="Удалить выбранное",
+                   command=delete_command).pack(pady=(0, 8))
+
+    def _build_subjects_tab(self):
+        self._build_list_tab(
+            self.subjects_tab, "Добавить предмет", "Все предметы",
+            self.add_subject, self.delete_subject,
+            "subject_entry", "subject_list",
+        )
+
+    def _build_teachers_tab(self):
+        self._build_list_tab(
+            self.teachers_tab, "Добавить преподавателя", "Все преподаватели",
+            self.add_teacher, self.delete_teacher,
+            "teacher_entry", "teacher_list",
+        )
 
     def reload(self):
         try:
-            payload = api_request("GET", "/groups")
-            self.groups = payload["groups"]
+            self.groups = api_request("GET", "/groups")["groups"]
             students = api_request("GET", "/students")["students"]
+            self.subjects = api_request("GET", "/subjects")["subjects"]
+            self.teachers = api_request("GET", "/teachers")["teachers"]
         except RuntimeError as exc:
             messagebox.showerror("Ошибка", str(exc), parent=self)
             return
+
         names = [f"{g['name']} ({g['students_count']})" for g in self.groups]
         self.group_combo["values"] = names
         if self.groups and self.group_combo.current() == -1:
@@ -154,6 +260,17 @@ class StudentsWindow(tk.Toplevel):
         for student in students:
             self.tree.insert("", "end", iid=str(student["id"]),
                              values=(student["name"], student["group_name"]))
+
+        self.subject_list.delete(0, "end")
+        for subject in self.subjects:
+            self.subject_list.insert(
+                "end", f"{subject['name']} (занятий: {subject['lessons_count']})"
+            )
+        self.teacher_list.delete(0, "end")
+        for teacher in self.teachers:
+            self.teacher_list.insert(
+                "end", f"{teacher['name']} (занятий: {teacher['lessons_count']})"
+            )
 
     def add_group(self):
         name = self.group_entry.get().strip()
@@ -182,6 +299,65 @@ class StudentsWindow(tk.Toplevel):
         self.student_entry.delete(0, "end")
         self.reload()
 
+    def delete_student(self):
+        selection = self.tree.selection()
+        if not selection:
+            return
+        try:
+            api_request("DELETE", f"/students/{int(selection[0])}")
+        except RuntimeError as exc:
+            messagebox.showerror("Ошибка", str(exc), parent=self)
+            return
+        self.reload()
+
+    def add_subject(self):
+        name = self.subject_entry.get().strip()
+        if not name:
+            return
+        try:
+            api_request("POST", "/subjects", {"name": name})
+        except RuntimeError as exc:
+            messagebox.showerror("Ошибка", str(exc), parent=self)
+            return
+        self.subject_entry.delete(0, "end")
+        self.reload()
+
+    def delete_subject(self):
+        selection = self.subject_list.curselection()
+        if not selection or selection[0] >= len(self.subjects):
+            return
+        subject = self.subjects[selection[0]]
+        try:
+            api_request("DELETE", f"/subjects/{subject['id']}")
+        except RuntimeError as exc:
+            messagebox.showerror("Ошибка", str(exc), parent=self)
+            return
+        self.reload()
+
+    def add_teacher(self):
+        name = self.teacher_entry.get().strip()
+        if not name:
+            return
+        try:
+            api_request("POST", "/teachers", {"name": name})
+        except RuntimeError as exc:
+            messagebox.showerror("Ошибка", str(exc), parent=self)
+            return
+        self.teacher_entry.delete(0, "end")
+        self.reload()
+
+    def delete_teacher(self):
+        selection = self.teacher_list.curselection()
+        if not selection or selection[0] >= len(self.teachers):
+            return
+        teacher = self.teachers[selection[0]]
+        try:
+            api_request("DELETE", f"/teachers/{teacher['id']}")
+        except RuntimeError as exc:
+            messagebox.showerror("Ошибка", str(exc), parent=self)
+            return
+        self.reload()
+
 
 class CalendarApp:
     def __init__(self, root):
@@ -204,7 +380,7 @@ class CalendarApp:
         self.title_label.pack(side="left", padx=8)
         ttk.Button(header, text="›", width=3, command=self.next_month).pack(side="left")
         ttk.Button(header, text="Сегодня", command=self.go_today).pack(side="left", padx=12)
-        ttk.Button(header, text="Студенты", command=self.open_students).pack(side="right")
+        ttk.Button(header, text="Справочники", command=self.open_students).pack(side="right")
         ttk.Button(header, text="Обновить", command=self.refresh).pack(side="right", padx=6)
 
         grid_frame = ttk.Frame(root)
@@ -311,15 +487,20 @@ class CalendarApp:
 
                 entries = self.schedule.get(day_date.isoformat(), [])
                 for entry in entries:
-                    text = entry["group_name"]
-                    if entry["subject"]:
-                        text = f"{entry['group_name']}: {entry['subject']}"
+                    parts = [entry["group_name"]]
+                    subject = entry.get("subject_name") or entry.get("subject")
+                    if subject:
+                        parts.append(subject)
+                    teacher = entry.get("teacher_name")
+                    if teacher:
+                        parts.append(teacher)
                     label = tk.Label(
                         cell,
-                        text=text,
+                        text=" · ".join(parts),
                         anchor="w",
                         justify="left",
-                        bg="#bbdefb" if not is_today else "#aed581",
+                        wraplength=120,
+                        bg=_entry_color(entry.get("subject_id")),
                         font=("Segoe UI", 8),
                         padx=3,
                     )
@@ -346,13 +527,21 @@ class CalendarApp:
         day_date = date(self.year, self.month, day)
         try:
             groups = api_request("GET", "/groups")["groups"]
+            subjects = api_request("GET", "/subjects")["subjects"]
+            teachers = api_request("GET", "/teachers")["teachers"]
         except RuntimeError as exc:
             messagebox.showerror("Ошибка", str(exc), parent=self.root)
             return
-        assigned = [
-            entry["group_id"] for entry in self.schedule.get(day_date.isoformat(), [])
-        ]
-        GroupSelectModal(self.root, day_date, groups, assigned, self.render)
+        day_entries = self.schedule.get(day_date.isoformat(), [])
+        assigned = [entry["group_id"] for entry in day_entries]
+        initial = {"subject_id": None, "teacher_id": None}
+        if day_entries:
+            initial["subject_id"] = day_entries[0].get("subject_id")
+            initial["teacher_id"] = day_entries[0].get("teacher_id")
+        GroupSelectModal(
+            self.root, day_date, groups, assigned,
+            subjects, teachers, initial, self.render,
+        )
 
 
 def main():

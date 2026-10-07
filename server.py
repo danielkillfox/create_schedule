@@ -68,6 +68,48 @@ def students_delete(student_id):
     return jsonify({"ok": True})
 
 
+@app.get("/api/teachers")
+def teachers_list():
+    return jsonify({"ok": True, "teachers": Students.get_teachers()})
+
+
+@app.post("/api/teachers")
+def teachers_create():
+    data = _payload()
+    try:
+        teacher_id = Students.add_teacher(data.get("name", ""))
+    except ValueError as exc:
+        return _error(str(exc))
+    return jsonify({"ok": True, "id": teacher_id}), 201
+
+
+@app.delete("/api/teachers/<int:teacher_id>")
+def teachers_delete(teacher_id):
+    Students.delete_teacher(teacher_id)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/subjects")
+def subjects_list():
+    return jsonify({"ok": True, "subjects": Students.get_subjects()})
+
+
+@app.post("/api/subjects")
+def subjects_create():
+    data = _payload()
+    try:
+        subject_id = Students.add_subject(data.get("name", ""))
+    except ValueError as exc:
+        return _error(str(exc))
+    return jsonify({"ok": True, "id": subject_id}), 201
+
+
+@app.delete("/api/subjects/<int:subject_id>")
+def subjects_delete(subject_id):
+    Students.delete_subject(subject_id)
+    return jsonify({"ok": True})
+
+
 @app.get("/api/schedule")
 def schedule_list():
     year = request.args.get("year", type=int)
@@ -84,7 +126,19 @@ def schedule_set():
     group_ids = data.get("group_ids")
     if not date or not isinstance(group_ids, list):
         return _error("Нужны date и group_ids")
-    Students.set_schedule(date, group_ids, data.get("subject", ""))
+    subject_id = data.get("subject_id")
+    teacher_id = data.get("teacher_id")
+    if subject_id is not None and not isinstance(subject_id, int):
+        return _error("subject_id должен быть числом")
+    if teacher_id is not None and not isinstance(teacher_id, int):
+        return _error("teacher_id должен быть числом")
+    Students.set_schedule(
+        date,
+        group_ids,
+        data.get("subject", ""),
+        subject_id,
+        teacher_id,
+    )
     return jsonify({"ok": True})
 
 

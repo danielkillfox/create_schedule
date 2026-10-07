@@ -27,16 +27,55 @@ def init_db():
                 FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS teachers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE
+            );
+
+            CREATE TABLE IF NOT EXISTS subjects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE
+            );
+
             CREATE TABLE IF NOT EXISTS schedule (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 date TEXT NOT NULL,
                 group_id INTEGER NOT NULL,
+                subject_id INTEGER REFERENCES subjects(id) ON DELETE SET NULL,
+                teacher_id INTEGER REFERENCES teachers(id) ON DELETE SET NULL,
                 subject TEXT NOT NULL DEFAULT '',
-                UNIQUE (date, group_id, subject),
+                UNIQUE (date, group_id, subject_id, teacher_id, subject),
                 FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
             );
             """
         )
+        _migrate_schedule(conn)
+
+
+def _migrate_schedule(conn):
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(schedule)")}
+    if "subject_id" in columns and "teacher_id" in columns:
+        return
+    conn.execute("ALTER TABLE schedule RENAME TO schedule_legacy")
+    conn.executescript(
+        """
+        CREATE TABLE schedule (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            group_id INTEGER NOT NULL,
+            subject_id INTEGER REFERENCES subjects(id) ON DELETE SET NULL,
+            teacher_id INTEGER REFERENCES teachers(id) ON DELETE SET NULL,
+            subject TEXT NOT NULL DEFAULT '',
+            UNIQUE (date, group_id, subject_id, teacher_id, subject),
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO schedule (id, date, group_id, subject)
+        SELECT id, date, group_id, subject FROM schedule_legacy;
+
+        DROP TABLE schedule_legacy;
+        """
+    )
 
 
 def add_group(name):
@@ -102,13 +141,77 @@ def delete_student(student_id):
         conn.execute("DELETE FROM students WHERE id = ?", (student_id,))
 
 
-def set_schedule(date, group_ids, subject=""):
+def add_teacher(name):
+    name = name.strip()
+    if not name:
+        raise ValueError("Имя преподавателя не может быть пустым")
+    with get_connection() as conn:
+        try:
+            cursor = conn.execute("INSERT INTO teachers (name) VALUES (?)", (name,))
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Такой преподаватель уже есть") from exc
+        return cursor.lastrowid
+
+
+def get_teachers():
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT t.id, t.name,
+                   (SELECT COUNT(*) FROM schedule sc WHERE sc.teacher_id = t.id) AS lessons_count
+            FROM teachers t
+            ORDER BY t.name
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def delete_teacher(teacher_id):
+    with get_connection() as conn:
+        conn.execute("DELETE FROM teachers WHERE id = ?", (teacher_id,))
+
+
+def add_subject(name):
+    name = name.strip()
+    if not name:
+        raise ValueError("Название предмета не может быть пустым")
+    with get_connection() as conn:
+        try:
+            cursor = conn.execute("INSERT INTO subjects (name) VALUES (?)", (name,))
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Такой предмет уже есть") from exc
+        return cursor.lastrowid
+
+
+def get_subjects():
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.id, s.name,
+                   (SELECT COUNT(*) FROM schedule sc WHERE sc.subject_id = s.id) AS lessons_count
+            FROM subjects s
+            ORDER BY s.name
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def delete_subject(subject_id):
+    with get_connection() as conn:
+        conn.execute("DELETE FROM subjects WHERE id = ?", (subject_id,))
+
+
+def set_schedule(date, group_ids, subject="", subject_id=None, teacher_id=None):
     with get_connection() as conn:
         conn.execute("DELETE FROM schedule WHERE date = ?", (date,))
         for group_id in group_ids:
             conn.execute(
-                "INSERT OR IGNORE INTO schedule (date, group_id, subject) VALUES (?, ?, ?)",
-                (date, group_id, subject),
+                """
+                INSERT OR IGNORE INTO schedule
+                    (date, group_id, subject, subject_id, teacher_id)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (date, group_id, subject, subject_id, teacher_id),
             )
 
 
@@ -117,9 +220,15 @@ def get_schedule(year, month):
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT sc.id, sc.date, sc.subject, sc.group_id, g.name AS group_name
+            SELECT sc.id, sc.date, sc.group_id, sc.subject_id, sc.teacher_id,
+                   COALESCE(sc.subject, '') AS subject,
+                   COALESCE(su.name, '') AS subject_name,
+                   g.name AS group_name,
+                   COALESCE(t.name, '') AS teacher_name
             FROM schedule sc
             JOIN groups g ON g.id = sc.group_id
+            LEFT JOIN subjects su ON su.id = sc.subject_id
+            LEFT JOIN teachers t ON t.id = sc.teacher_id
             WHERE sc.date LIKE ?
             ORDER BY sc.date, g.name
             """,
