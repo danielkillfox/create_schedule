@@ -1848,11 +1848,6 @@ class MainWindow(QWidget):
             return
         try:
             self.db.update_schedule_weekday([int(i) for i in ids], int(weekday))
-        except ValueError as e:
-            # Накладка: перенос отклонён, возвращаем комбобокс назад
-            QMessageBox.warning(self, "Перенос невозможен", str(e))
-            self.on_schedule_teacher_changed()
-            return
         except Exception as e:
             QMessageBox.critical(self, "Ошибка БД", str(e))
             self.on_schedule_teacher_changed()
