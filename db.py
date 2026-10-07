@@ -456,6 +456,12 @@ class DB:
             aud = row.get("aud_name") or "—"
             return f"«{subj}», {grp}, {aud}"
 
+        srow = None
+        if sid is not None:
+            srow = self.c.execute(
+                "SELECT name FROM subjects WHERE id = ?", (sid,)).fetchone()
+        subj_name = str(srow["name"]) if srow else "—"
+
         with self._tx():
             # Все существующие занятия препода с именами для отчётов
             self.c.execute(
@@ -505,15 +511,26 @@ class DB:
                 holder = occupied.get(slot)
                 if holder is not None and holder != new_key:
                     gname, aname = _names(g, a)
+                    holder_desc = descs.get(slot)
+                    if holder_desc is None:
+                        # Слот занят строкой из этой же пачки
+                        holder_desc = {"subject_name": subj_name,
+                                       "group_name": gname,
+                                       "aud_name": aname}
                     conflicts.append({
                         "group_name": gname,
                         "aud_name": aname,
                         "pair_number": p,
                         "weekday": w,
-                        "busy_by": _lesson_desc(descs[slot]),
+                        "busy_by": _lesson_desc(holder_desc),
                     })
                     continue
-                occupied.setdefault(slot, new_key)
+                if slot not in occupied:
+                    occupied[slot] = new_key
+                    gname, aname = _names(g, a)
+                    descs[slot] = {"subject_name": subj_name,
+                                   "group_name": gname,
+                                   "aud_name": aname}
                 exact.add((g, a, p, w))
                 to_insert.append((tid, sid, g, a, kind, p, w))
 

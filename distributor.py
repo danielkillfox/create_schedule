@@ -50,6 +50,7 @@ class DistributionResult:
     placed: list[PlacedGroup] = field(default_factory=list)
     not_placed: list[Group] = field(default_factory=list)
     auditoriums: list[Auditorium] = field(default_factory=list)
+    note: str = ""  # пояснение, если разместить не удалось (например, нет зала на поток)
 
     @property
     def total_people(self) -> int:
@@ -80,7 +81,16 @@ def distribute(
     groups: list[Group],
     auditoriums: list[Auditorium],
     time_per_cell: float = 1.0,
+    max_groups_per_room: Optional[int] = None,
+    whole_stream: bool = False,
 ) -> DistributionResult:
+    """Размещает группы по аудиториям и ячейкам (парам).
+
+    whole_stream=True (лекции): весь поток идёт вместе в одну аудиторию —
+    выбирается наименьшая, куда влезают все. Не влезли — все в not_placed.
+    max_groups_per_room (практики): не больше N групп в одной аудитории
+    в одной ячейке (вместимость при этом тоже соблюдается).
+    """
 
     if not groups or not auditoriums:
         return DistributionResult(
@@ -88,13 +98,17 @@ def distribute(
             auditoriums=list(auditoriums),
         )
 
+    if whole_stream:
+        return _distribute_whole_stream(groups, auditoriums)
+
     remaining = list(groups)
     all_placed: list[PlacedGroup] = []
     cell = 1
 
     while remaining:
         placed_now, remaining = _pack_one_cell(
-            remaining, auditoriums, cell, time_per_cell
+            remaining, auditoriums, cell, time_per_cell,
+            max_groups_per_room=max_groups_per_room,
         )
         if not placed_now:
             break
@@ -107,15 +121,39 @@ def distribute(
         auditoriums=list(auditoriums),
     )
 
+
+def _distribute_whole_stream(
+    groups: list[Group],
+    auditoriums: list[Auditorium],
+) -> DistributionResult:
+    """Лекция: весь поток в одну аудиторию (best fit)."""
+    total = sum(g.students for g in groups)
+    fitting = [a for a in auditoriums if a.capacity >= total]
+    if not fitting:
+        biggest = max(a.capacity for a in auditoriums)
+        return DistributionResult(
+            not_placed=list(groups),
+            auditoriums=list(auditoriums),
+            note=(f"Нет аудитории на весь поток: нужно мест {total}, "
+                  f"максимум {biggest}."),
+        )
+    best = min(fitting, key=lambda a: (a.capacity, a.name))
+    return DistributionResult(
+        placed=[PlacedGroup(group=g, auditorium=best, cell=1) for g in groups],
+        auditoriums=list(auditoriums),
+    )
+
 def _pack_one_cell(
     groups: list[Group],
     auditoriums: list[Auditorium],
     cell: int,
     time_limit: float,
+    max_groups_per_room: Optional[int] = None,
 ) -> tuple[list[PlacedGroup], list[Group]]:
     n = len(groups)
     caps = [a.capacity for a in auditoriums]
     loads = [0] * len(caps)
+    counts = [0] * len(caps)
     assign: list[Optional[int]] = [None] * n
     order = sorted(range(n), key=lambda i: -groups[i].students)
 
@@ -141,10 +179,13 @@ def _pack_one_cell(
 
         tried = set()
         for c in range(len(caps)):
-            if loads[c] + size <= caps[c] and loads[c] not in tried:
-                tried.add(loads[c])
+            if max_groups_per_room is not None and counts[c] >= max_groups_per_room:
+                continue
+            if loads[c] + size <= caps[c] and (loads[c], counts[c]) not in tried:
+                tried.add((loads[c], counts[c]))
                 new_bin = (loads[c] == 0)
                 loads[c] += size
+                counts[c] += 1
                 assign[idx] = c
                 backtrack(
                     k + 1,
@@ -153,6 +194,7 @@ def _pack_one_cell(
                     bins_used + (1 if new_bin else 0),
                 )
                 loads[c] -= size
+                counts[c] -= 1
                 assign[idx] = None
 
         backtrack(k + 1, placed_count, placed_people, bins_used)

@@ -1184,12 +1184,30 @@ class MainWindow(QWidget):
         )
         total = self.groups_preview.rowCount()
 
-        # Сколько пар понадобится хотя бы теоретически:
-        # ceil(групп / аудиторий), но не больше 6
+        # Сколько мест/ячеек понадобится хотя бы теоретически
         cells_hint = ""
         if checked > 0 and len(by_kind) > 0:
-            need = -(-checked // len(by_kind))  # ceil
-            cells_hint = f"  ·  ячеек нужно минимум: {need}"
+            people = sum(
+                int(self.groups_preview.item(r, 2).text())
+                for r in range(self.groups_preview.rowCount())
+                if self.groups_preview.item(r, 0)
+                and self.groups_preview.item(r, 0).checkState() == Qt.CheckState.Checked
+                and self.groups_preview.item(r, 2) is not None
+            )
+            if kind == KIND_LECTURE:
+                # Весь поток в одну аудиторию
+                biggest = max(a.capacity for a in by_kind)
+                if biggest >= people:
+                    cells_hint = f"  ·  поток {people} чел. — 1 ячейка"
+                else:
+                    cells_hint = (
+                        f"  ·  поток {people} чел. не влезет "
+                        f"(максимум {biggest})!"
+                    )
+            else:
+                # Практика: не больше 2 групп в кабинете
+                need = -(-checked // (2 * len(by_kind)))  # ceil
+                cells_hint = f"  ·  ячеек нужно минимум: {need} (по 2 группы)"
 
         self.summary_label.setText(
             f"Групп выбрано: {checked} из {total}  ·  "
@@ -1239,19 +1257,25 @@ class MainWindow(QWidget):
 
     MAX_LECTURES_PER_DAY = 2
 
-    def _apply_max2_per_day(
-        self, result: distributor.DistributionResult, teacher_id: int
-    ) -> tuple[str, str]:
+    def _assign_weekdays(
+        self, result: distributor.DistributionResult, teacher_id: int,
+        subject_id: int, kind: str, max_per_day: int | None = None,
+    ) -> str:
         """Раскладывает result.placed по дням Пн–Пт (поле weekday).
 
-        Учитывает уже записанные лекции преподавателя: в один день суммарно
-        (старые + новые) должно быть не больше MAX_LECTURES_PER_DAY лекций.
-        Группы, которым не хватило места в лимите, переносятся в not_placed.
-        Возвращает (limit_note, pair_busy_note) для отчёта.
+        Единица планирования — связка (пара + аудитория): все группы одного
+        занятия получают один день, поток не разбивается. Связка кладётся
+        только на день, где эта пара у преподавателя свободна или занята
+        ТЕМ ЖЕ занятием (тогда запись сольётся/пропустит дубли). Занятия,
+        для которых нет свободного дня, переносятся в not_placed целиком —
+        накладка невозможна по построению.
+        max_per_day ограничивает число новых занятий в день (фильтр лекций).
+        Возвращает заметку для отчёта ("" если всё поместилось).
         """
         existing = self.db.get_teacher_schedule(int(teacher_id))
         loads = [0] * 5
-        occupied: dict[int, set[int]] = {w: set() for w in range(5)}
+        # (день, пара) -> множество ключей занятий, уже стоящих там
+        busy: dict[tuple[int, int], set[tuple]] = {}
         for r in existing:
             try:
                 w = int(r.get("weekday", 0) or 0)
@@ -1263,53 +1287,62 @@ class MainWindow(QWidget):
                 p = int(r.get("pair_number", 0) or 0)
             except (TypeError, ValueError):
                 p = 0
-            if p:
-                occupied[w].add(p)
-            if r.get("kind") == KIND_LECTURE:
+            if not p:
+                continue
+            sid = -1 if r.get("subject_id") is None else int(r["subject_id"])
+            busy.setdefault((w, p), set()).add(
+                (sid, str(r.get("kind")), str(r.get("aud_name") or "")))
+            if max_per_day is not None and r.get("kind") == KIND_LECTURE:
                 loads[w] += 1
 
         overflow: list[distributor.Group] = []
-        pair_busy = 0
         kept: list[distributor.PlacedGroup] = []
+        bundles: dict[tuple[int, int], list[distributor.PlacedGroup]] = {}
         for p in result.placed:
-            days_by_load = sorted(range(5), key=lambda w: (loads[w], w))
-            chosen = None
-            for w in days_by_load:
-                if loads[w] < self.MAX_LECTURES_PER_DAY and p.cell not in occupied[w]:
-                    chosen = w
-                    break
-            if chosen is None:
-                for w in days_by_load:
-                    if loads[w] < self.MAX_LECTURES_PER_DAY:
-                        chosen = w
-                        pair_busy += 1
-                        break
-            if chosen is None:
-                overflow.append(p.group)
+            bundles.setdefault((p.cell, p.auditorium.id), []).append(p)
+        for (cell, aid) in sorted(bundles):
+            bundle = bundles[(cell, aid)]
+            my_key = (int(subject_id), str(kind), str(bundle[0].auditorium.name))
+            # Кандидаты: дни, где пара свободна или занята тем же занятием.
+            # Сначала дни с тем же занятием (перезапись сольётся),
+            # потом наименее загруженные.
+            cands = []
+            for w in range(5):
+                holders = busy.get((w, cell), set())
+                foreign = {h for h in holders if h != my_key}
+                if foreign:
+                    continue
+                if max_per_day is not None and loads[w] >= max_per_day:
+                    continue
+                same = bool(holders)  # там уже стоит это же занятие
+                cands.append((loads[w] if max_per_day is not None else 0,
+                              0 if same else 1, w))
+            if not cands:
+                overflow.extend(p.group for p in bundle)
                 continue
-            p.weekday = chosen
-            loads[chosen] += 1
-            occupied[chosen].add(p.cell)
-            kept.append(p)
+            chosen = sorted(cands)[0][2]
+            for p in bundle:
+                p.weekday = chosen
+                kept.append(p)
+            busy.setdefault((chosen, cell), set()).add(my_key)
+            if max_per_day is not None:
+                loads[chosen] += 1
 
         result.placed = kept
         result.not_placed = list(result.not_placed) + overflow
 
-        limit_note = ""
-        if overflow:
-            names = ", ".join(g.name for g in overflow)
-            limit_note = (
-                f"Лимит «не больше {self.MAX_LECTURES_PER_DAY} лекций в день»: "
+        if not overflow:
+            return ""
+        names = ", ".join(g.name for g in overflow)
+        if max_per_day is not None:
+            return (
+                f"Лимит «не больше {max_per_day} лекций в день»: "
                 f"не поместились ({len(overflow)}): {names}"
             )
-        pair_busy_note = ""
-        if pair_busy:
-            pair_busy_note = (
-                f"Внимание: {pair_busy} зан. поставлены на пару, "
-                f"уже занятую у преподавателя в этот день, — "
-                f"при записи они будут отклонены как накладки."
-            )
-        return limit_note, pair_busy_note
+        return (
+            f"Пара занята у преподавателя всю неделю: "
+            f"не поместились ({len(overflow)}): {names}"
+        )
 
     def distribute(self, silent: bool = False) -> bool:
         course = self.course_combo.currentData()
@@ -1362,6 +1395,9 @@ class MainWindow(QWidget):
         result = distributor.distribute(
             groups, auds,
             time_per_cell=1.0,
+            # Лекция — весь поток вместе; практика — не больше 2 групп в кабинете
+            whole_stream=(kind == KIND_LECTURE),
+            max_groups_per_room=None if kind == KIND_LECTURE else 2,
         )
 
         use_max2 = (
@@ -1369,17 +1405,24 @@ class MainWindow(QWidget):
             and self.max2_checkbox.isChecked()
             and kind == KIND_LECTURE
         )
-        limit_note = ""
-        pair_busy_note = ""
-        if use_max2:
-            if teacher_id is None:
-                if not silent:
-                    QMessageBox.warning(
-                        self, "Ошибка",
-                        "Для фильтра «Не больше 2 лекций в день» выберите преподавателя."
-                    )
-                return False
-            limit_note, pair_busy_note = self._apply_max2_per_day(result, int(teacher_id))
+        if use_max2 and teacher_id is None:
+            if not silent:
+                QMessageBox.warning(
+                    self, "Ошибка",
+                    "Для фильтра «Не больше 2 лекций в день» выберите преподавателя."
+                )
+            return False
+        # Дни назначаются всегда, когда выбран преподаватель: каждая связка
+        # (пара + аудитория) кладётся на день, свободный у преподавателя.
+        # Без преподавателя дни неизвестны — остаётся Пн (запись всё равно
+        # потребует преподавателя).
+        days_note = ""
+        with_days = teacher_id is not None
+        if with_days:
+            days_note = self._assign_weekdays(
+                result, int(teacher_id), int(subject_id), kind,
+                max_per_day=self.MAX_LECTURES_PER_DAY if use_max2 else None,
+            )
 
         self._last_result = result
         self._last_context = {
@@ -1387,9 +1430,8 @@ class MainWindow(QWidget):
             "subject_id": int(subject_id),
             "teacher_id": int(teacher_id) if teacher_id is not None else None,
             "kind": kind,
-            "with_days": use_max2,
-            "limit_note": limit_note,
-            "pair_busy_note": pair_busy_note,
+            "with_days": with_days,
+            "limit_note": days_note,
         }
 
         assignments = [(p.group.id, p.auditorium.id, p.cell) for p in result.placed]
@@ -1422,6 +1464,8 @@ class MainWindow(QWidget):
             lines.append(
                 f"Фильтр: не больше {self.MAX_LECTURES_PER_DAY} лекций в день — вкл."
             )
+        if result.note:
+            lines.append(result.note)
 
         if with_days:
             slots: dict[tuple[int, int], list[distributor.PlacedGroup]] = {}
@@ -1462,9 +1506,6 @@ class MainWindow(QWidget):
                 lines.append("!!! НЕ ПОМЕСТИЛИСЬ (не хватило ячеек) !!!")
             for g in result.not_placed:
                 lines.append(f"- {g.name} ({g.students} чел.)")
-        if ctx.get("pair_busy_note"):
-            lines.append("")
-            lines.append(ctx["pair_busy_note"])
 
         self.text_result.setText("\n".join(lines))
 
