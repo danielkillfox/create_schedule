@@ -1,0 +1,64 @@
+# .github/workflows/build-release.yml
+# =====================================================================
+# Сборка релиза под Windows, Linux и macOS через GitHub Actions.
+# Простыми словами: PyInstaller не умеет собирать "чужую" систему,
+# поэтому мы просим сам GitHub собрать программу на трёх своих
+# компьютерах (Windows, Ubuntu, macOS) и сложить результаты в артефакты.
+# Как пользоваться:
+#   1. Закоммить и запушить этот файл в репозиторий на GitHub.
+#   2. Создать тег версии:  git tag v1.0 ; git push origin v1.0
+#      (или запустить вручную: Actions -> Build release -> Run workflow).
+#   3. Забрать готовые сборки: Actions -> нужная сборка -> Artifacts:
+#      CreateSchedule-Windows / CreateSchedule-Linux / CreateSchedule-macOS.
+# =====================================================================
+
+name: Build release
+
+on:
+  push:
+    tags: ["v*"]          # сборка при выходе версии (тег вида v1.0, v1.1...)
+  workflow_dispatch:      # ...и кнопка ручного запуска в интерфейсе GitHub
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Забрать код
+        uses: actions/checkout@v4
+
+      - name: Поставить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Qt на Linux нужны системные библиотеки, иначе окно не стартует.
+      - name: Системные библиотеки (только Linux)
+        if: runner.os == 'Linux'
+        run: >
+          sudo apt-get update &&
+          sudo apt-get install -y
+          libegl1 libxkbcommon0 libdbus-1-3
+          libfontconfig1 libxcb-cursor0
+
+      - name: Поставить зависимости
+        run: pip install pyinstaller PyQt6 openpyxl
+
+      # Та же команда, что и локальная сборка:
+      # --onedir (папка с программой), --windowed (без чёрного окна консоли),
+      # hidden-import нужны, т.к. excel_io подключается лениво внутри методов.
+      - name: Собрать программу
+        run: >
+          pyinstaller --noconfirm --clean --onedir --windowed
+          --name CreateSchedule
+          --hidden-import excel_io --hidden-import openpyxl
+          main.py
+
+      - name: Сохранить сборку в артефакты
+        uses: actions/upload-artifact@v4
+        with:
+          name: CreateSchedule-${{ runner.os }}
+          path: dist/

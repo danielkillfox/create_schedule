@@ -1,1 +1,8 @@
 SECURITY_AUDIT.md
+*.db
+*.spec
+Release/
+build/
+dist/
+__pycache__/
+*.pyc

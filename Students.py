@@ -1,28 +1,11 @@
-# Students.py
-# =====================================================================
-# Простая база данных студентов (файл students.db рядом с программой).
-# Простыми словами:
-# - Это как Excel, только надёжнее: таблицы "Группы", "Студенты",
-#   "Преподаватели", "Предметы", "Расписание".
-# - Каждая функция ниже - это одно действие: "добавить", "получить", "удалить".
-# - Все данные хранятся в файле students.db, ничего не потеряется после закрытия.
-# Словарик:
-#   conn   = "соединение" с файлом базы (открыли файл, чтобы читать/писать)
-#   cursor = "курсор" - то, чем мы выполняем команды на языке SQL
-#   SQL    = язык запросов к базе, например "SELECT * FROM groups" = "дай всё из групп"
-# =====================================================================
 
-import sqlite3  # встроенная библиотека Python для работы с базой SQLite (файл-база)
-from pathlib import Path  # помогает найти файл students.db рядом с этим файлом
+import sqlite3
+from pathlib import Path
 
-# Находим файл базы: он лежит в той же папке, где и этот Students.py
 DB_PATH = Path(__file__).with_name("students.db")
 
 
 def get_connection():
-    # Открыть базу и настроить её.
-    # row_factory = sqlite3.Row позволяет обращаться к данным по имени: row["name"].
-    # PRAGMA foreign_keys = ON включает проверку связей (нельзя сослаться на несуществующую группу).
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -30,8 +13,6 @@ def get_connection():
 
 
 def init_db():
-    # Создать все таблицы, если их ещё нет. Вызывается при старте программы.
-    # IF NOT EXISTS значит "если таблица уже есть - не трогай её, данные не удаляй".
     with get_connection() as conn:
         conn.executescript(
             """
@@ -73,12 +54,9 @@ def init_db():
 
 
 def _migrate_schedule(conn):
-    # "Переезд" старой базы на новую. Если у кого-то остался старый файл students.db
-    # без колонок subject_id/teacher_id - мы аккуратно пересоздаём таблицу
-    # и переносим старые данные, ничего не теряя.
     columns = {row[1] for row in conn.execute("PRAGMA table_info(schedule)")}
     if "subject_id" in columns and "teacher_id" in columns:
-        return  # уже новая версия, делать ничего не надо
+        return
     conn.execute("ALTER TABLE schedule RENAME TO schedule_legacy")
     conn.executescript(
         """
@@ -102,19 +80,15 @@ def _migrate_schedule(conn):
 
 
 def add_group(name):
-    # Добавить новую группу. Пример: add_group("ИСП-101").
-    # strip() убирает случайные пробелы по краям. Пустое имя запрещаем.
     name = name.strip()
     if not name:
         raise ValueError("Название группы не может быть пустым")
     with get_connection() as conn:
         cursor = conn.execute("INSERT INTO groups (name) VALUES (?)", (name,))
-        return cursor.lastrowid  # возвращаем номер новой группы (id)
+        return cursor.lastrowid
 
 
 def get_groups():
-    # Получить все группы + посчитать, сколько студентов в каждой.
-    # Вложенный SELECT COUNT(*) - это "подсчитай студентов этой группы".
     with get_connection() as conn:
         rows = conn.execute(
             """
@@ -128,14 +102,11 @@ def get_groups():
 
 
 def delete_group(group_id):
-    # Удалить группу. Все её студенты и расписание тоже удалятся сами
-    # (это настроено через ON DELETE CASCADE - "удаляй как лавина").
     with get_connection() as conn:
         conn.execute("DELETE FROM groups WHERE id = ?", (group_id,))
 
 
 def add_student(name, group_id):
-    # Добавить студента в группу. Сначала проверяем, что такая группа существует.
     name = name.strip()
     if not name:
         raise ValueError("Имя студента не может быть пустым")
@@ -151,8 +122,6 @@ def add_student(name, group_id):
 
 
 def get_students(group_id=None):
-    # Получить студентов. Если group_id указан - только этой группы, если нет - всех.
-    # JOIN groups нужен, чтобы рядом с именем студента показать и название его группы.
     query = """
         SELECT s.id, s.name, s.group_id, g.name AS group_name
         FROM students s
@@ -169,14 +138,11 @@ def get_students(group_id=None):
 
 
 def delete_student(student_id):
-    # Удалить одного студента по его номеру.
     with get_connection() as conn:
         conn.execute("DELETE FROM students WHERE id = ?", (student_id,))
 
 
 def add_teacher(name):
-    # Добавить преподавателя. Имена должны быть уникальными - двух одинаковых не даём создать.
-    # sqlite3.IntegrityError - это ошибка базы "такое уже есть", мы превращаем её в понятную фразу.
     name = name.strip()
     if not name:
         raise ValueError("Имя преподавателя не может быть пустым")
@@ -189,7 +155,6 @@ def add_teacher(name):
 
 
 def get_teachers():
-    # Все преподаватели + сколько занятий у каждого в расписании (чтобы видеть нагрузку).
     with get_connection() as conn:
         rows = conn.execute(
             """
@@ -203,14 +168,11 @@ def get_teachers():
 
 
 def delete_teacher(teacher_id):
-    # Удалить преподавателя. Его занятия в расписании не пропадут, а станут "без преподавателя"
-    # (это настроено через ON DELETE SET NULL).
     with get_connection() as conn:
         conn.execute("DELETE FROM teachers WHERE id = ?", (teacher_id,))
 
 
 def add_subject(name):
-    # Добавить предмет (например, "Математика"). Дубликаты запрещены.
     name = name.strip()
     if not name:
         raise ValueError("Название предмета не может быть пустым")
@@ -223,7 +185,6 @@ def add_subject(name):
 
 
 def get_subjects():
-    # Все предметы + сколько занятий по каждому уже запланировано.
     with get_connection() as conn:
         rows = conn.execute(
             """
@@ -237,15 +198,11 @@ def get_subjects():
 
 
 def delete_subject(subject_id):
-    # Удалить предмет.
     with get_connection() as conn:
         conn.execute("DELETE FROM subjects WHERE id = ?", (subject_id,))
 
 
 def set_schedule(date, group_ids, subject="", subject_id=None, teacher_id=None):
-    # Записать расписание на один день (дата вида "2026-10-12").
-    # Логика: сначала стираем всё, что было на этот день, потом записываем заново.
-    # INSERT OR IGNORE значит "если такая строчка уже есть - не ругайся, просто пропусти".
     with get_connection() as conn:
         conn.execute("DELETE FROM schedule WHERE date = ?", (date,))
         for group_id in group_ids:
@@ -260,9 +217,6 @@ def set_schedule(date, group_ids, subject="", subject_id=None, teacher_id=None):
 
 
 def get_schedule(year, month):
-    # Получить расписание за месяц. Пример: get_schedule(2026, 10) = "весь октябрь 2026".
-    # Мы ищем даты, которые начинаются как "2026-10-..." (знак % = "дальше что угодно").
-    # COALESCE(x, '') значит "если пусто - покажи пустую строку, а не ошибку".
     prefix = f"{year:04d}-{month:02d}-%"
     with get_connection() as conn:
         rows = conn.execute(
@@ -285,9 +239,8 @@ def get_schedule(year, month):
 
 
 def delete_schedule_entry(entry_id):
-    # Удалить одну строчку расписания (одно занятие одной группы).
     with get_connection() as conn:
         conn.execute("DELETE FROM schedule WHERE id = ?", (entry_id,))
 
 
-init_db()  # при подключении файла сразу создаём таблицы, чтобы всё было готово
+init_db()

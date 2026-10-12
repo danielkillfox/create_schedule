@@ -1,25 +1,9 @@
-# lang.py
-# =====================================================================
-# ПЕРЕВОДЫ интерфейса на 7 языков: русский, английский, испанский,
-# итальянский, немецкий, французский и китайский.
-# Простыми словами:
-# - Здесь лежит "словарь": для каждого текста (ключа) есть 7 вариантов.
-# - tr("btn_add") возвращает текст кнопки на ТЕКУЩЕМ языке.
-# - set_language("en") меняет язык и запоминает выбор в файле settings.json,
-#   чтобы при следующем запуске язык не сбрасывался.
-# - weekday_names() отдаёт названия дней недели (Пн..Пт) на текущем языке.
-# - course_name(n) отдаёт "N курс" на текущем языке.
-# Как добавить новый текст: придумать ключ, добавить 7 переводов ниже,
-# а в окне использовать tr("ключ") вместо готового текста.
-# =====================================================================
 
 import json
 from pathlib import Path
 
-# Рядом с программой хранится маленький файл с выбором человека.
 SETTINGS_PATH = Path(__file__).with_name("settings.json")
 
-# Коды языков. Именно эти строки сохраняются в settings.json.
 RU = "ru"
 EN = "en"
 ES = "es"
@@ -28,7 +12,6 @@ DE = "de"
 FR = "fr"
 ZH = "zh"
 
-# Как показать каждый язык в списке выбора (названия всегда на родном языке).
 LANGUAGE_NAMES = {
     RU: "Русский",
     EN: "English",
@@ -41,12 +24,10 @@ LANGUAGE_NAMES = {
 
 SUPPORTED = (RU, EN, ES, IT, DE, FR, ZH)
 
-# Текущий язык. При запуске читается из settings.json (по умолчанию русский).
 _current: str = RU
 
 
 def _load_saved() -> str:
-    # Прочитать сохранённый язык из файла. Если файла нет или он битый - русский.
     try:
         data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
         code = str(data.get("language", RU)).lower()
@@ -59,12 +40,10 @@ _current = _load_saved()
 
 
 def get_language() -> str:
-    # Узнать текущий язык ("ru", "en", "es", "it", "de", "fr" или "zh").
     return _current
 
 
 def set_language(code: str) -> str:
-    # Сменить язык и сохранить выбор в файл. Возвращает итоговый код.
     global _current
     code = str(code).lower()
     if code not in SUPPORTED:
@@ -76,17 +55,11 @@ def set_language(code: str) -> str:
             encoding="utf-8",
         )
     except OSError:
-        pass  # не смогли сохранить - не страшно, язык всё равно сменится до перезапуска
+        pass
     return _current
 
 
-# =====================================================================
-# СЛОВАРЬ: ключ -> {язык: перевод}. Русский столбец повторяет старые тексты,
-# чтобы после добавления переводов ничего не изменилось для тех, кто уже привык.
-# =====================================================================
-
 TEXTS: dict[str, dict[str, str]] = {
-    # --- Окно и вкладки ---
     "app_title": {
         RU: "Распределение групп по аудиториям и парам",
         EN: "Group-to-room and lesson scheduler",
@@ -105,7 +78,6 @@ TEXTS: dict[str, dict[str, str]] = {
     "tab_calendar": {RU: "7. Таблица", EN: "7. Grid", ES: "7. Tabla", IT: "7. Tabella", DE: "7. Tabelle", FR: "7. Tableau", ZH: "7. 表格"},
     "tab_settings": {RU: "8. Настройки", EN: "8. Settings", ES: "8. Ajustes", IT: "8. Impostazioni", DE: "8. Einstellungen", FR: "8. Paramètres", ZH: "8. 设置"},
 
-    # --- Кнопки Excel сверху ---
     "btn_export": {RU: "Экспорт в Excel", EN: "Export to Excel", ES: "Exportar a Excel", IT: "Esporta in Excel", DE: "Nach Excel exportieren", FR: "Exporter vers Excel", ZH: "导出到 Excel"},
     "btn_export_tip": {
         RU: "Выгрузить все данные в файл .xlsx",
@@ -127,7 +99,6 @@ TEXTS: dict[str, dict[str, str]] = {
         ZH: "从 .xlsx 文件加载数据",
     },
 
-    # --- Общие слова (используются на нескольких вкладках) ---
     "lbl_name": {RU: "Название:", EN: "Name:", ES: "Nombre:", IT: "Nome:", DE: "Name:", FR: "Nom :", ZH: "名称："},
     "lbl_person": {RU: "Имя:", EN: "Name:", ES: "Nombre:", IT: "Nome:", DE: "Name:", FR: "Nom :", ZH: "姓名："},
     "btn_add": {RU: "Добавить", EN: "Add", ES: "Añadir", IT: "Aggiungi", DE: "Hinzufügen", FR: "Ajouter", ZH: "添加"},
@@ -137,7 +108,6 @@ TEXTS: dict[str, dict[str, str]] = {
     "lbl_bind": {RU: "Привязать:", EN: "Link:", ES: "Vincular:", IT: "Collega:", DE: "Verknüpfen:", FR: "Associer :", ZH: "关联："},
     "btn_bind": {RU: "Привязать", EN: "Link", ES: "Vincular", IT: "Collega", DE: "Verknüpfen", FR: "Associer", ZH: "关联"},
 
-    # --- Вкладка 1. Группы ---
     "box_add_group": {RU: "Добавить группу", EN: "Add a group", ES: "Añadir un grupo", IT: "Aggiungi un gruppo", DE: "Gruppe hinzufügen", FR: "Ajouter un groupe", ZH: "添加班级"},
     "lbl_students": {RU: "Студентов:", EN: "Students:", ES: "Estudiantes:", IT: "Studenti:", DE: "Studierende:", FR: "Étudiants :", ZH: "学生人数："},
     "lbl_course": {RU: "Курс:", EN: "Year:", ES: "Curso:", IT: "Anno:", DE: "Jahr:", FR: "Année :", ZH: "年级："},
@@ -147,7 +117,6 @@ TEXTS: dict[str, dict[str, str]] = {
     "hdr_course": {RU: "Курс", EN: "Year", ES: "Curso", IT: "Anno", DE: "Jahr", FR: "Année", ZH: "年级"},
     "btn_clear_groups": {RU: "Очистить все группы", EN: "Clear all groups", ES: "Borrar grupos", IT: "Cancella i gruppi", DE: "Alle Gruppen löschen", FR: "Effacer les groupes", ZH: "清空所有班级"},
 
-    # --- Вкладка 2. Аудитории ---
     "box_add_aud": {RU: "Добавить аудиторию", EN: "Add a room", ES: "Añadir un aula", IT: "Aggiungi un'aula", DE: "Raum hinzufügen", FR: "Ajouter une salle", ZH: "添加教室"},
     "lbl_capacity": {RU: "Вместимость:", EN: "Capacity:", ES: "Capacidad:", IT: "Capienza:", DE: "Kapazität:", FR: "Capacité :", ZH: "容量："},
     "lbl_type": {RU: "Тип:", EN: "Type:", ES: "Tipo:", IT: "Tipo:", DE: "Typ:", FR: "Type :", ZH: "类型："},
@@ -157,7 +126,6 @@ TEXTS: dict[str, dict[str, str]] = {
     "hdr_type": {RU: "Тип", EN: "Type", ES: "Tipo", IT: "Tipo", DE: "Typ", FR: "Type", ZH: "类型"},
     "btn_clear_auds": {RU: "Очистить все аудитории", EN: "Clear all rooms", ES: "Borrar aulas", IT: "Cancella le aule", DE: "Alle Räume löschen", FR: "Effacer les salles", ZH: "清空所有教室"},
 
-    # --- Вкладка 3. Преподаватели ---
     "box_add_teacher": {RU: "Добавить преподавателя", EN: "Add a teacher", ES: "Añadir un profesor", IT: "Aggiungi un docente", DE: "Lehrkraft hinzufügen", FR: "Ajouter un enseignant", ZH: "添加教师"},
     "lbl_teachers": {RU: "Преподаватели:", EN: "Teachers:", ES: "Profesores:", IT: "Docenti:", DE: "Lehrkräfte:", FR: "Enseignants :", ZH: "教师："},
     "hdr_teacher_name": {RU: "Имя", EN: "Name", ES: "Nombre", IT: "Nome", DE: "Name", FR: "Nom", ZH: "姓名"},
@@ -169,7 +137,6 @@ TEXTS: dict[str, dict[str, str]] = {
     "hdr_aud_name": {RU: "Аудитория", EN: "Room", ES: "Aula", IT: "Aula", DE: "Raum", FR: "Salle", ZH: "教室"},
     "btn_unbind_aud": {RU: "Отвязать выбранную аудиторию", EN: "Unlink room", ES: "Desvincular aula", IT: "Scollega aula", DE: "Raum trennen", FR: "Dissocier la salle", ZH: "取消关联教室"},
 
-    # --- Вкладка 4. Предметы ---
     "box_add_subject": {RU: "Добавить предмет", EN: "Add a subject", ES: "Añadir asignatura", IT: "Aggiungi materia", DE: "Fach hinzufügen", FR: "Ajouter une matière", ZH: "添加科目"},
     "lbl_subjects": {RU: "Предметы:", EN: "Subjects:", ES: "Asignaturas:", IT: "Materie:", DE: "Fächer:", FR: "Matières :", ZH: "科目："},
     "btn_del_subject": {RU: "Удалить предмет", EN: "Delete subject", ES: "Eliminar asignatura", IT: "Elimina materia", DE: "Fach löschen", FR: "Supprimer la matière", ZH: "删除科目"},
@@ -179,7 +146,6 @@ TEXTS: dict[str, dict[str, str]] = {
     "lbl_add_course": {RU: "Добавить курс:", EN: "Add year:", ES: "Añadir curso:", IT: "Aggiungi anno:", DE: "Jahr hinzufügen:", FR: "Ajouter une année :", ZH: "添加年级："},
     "btn_remove_course": {RU: "Убрать выбранный курс", EN: "Remove year", ES: "Quitar curso", IT: "Rimuovi anno", DE: "Jahr entfernen", FR: "Retirer l'année", ZH: "移除所选年级"},
 
-    # --- Вкладка 5. Распределение ---
     "box_params": {RU: "Параметры распределения", EN: "Allocation settings", ES: "Parámetros", IT: "Parametri", DE: "Verteilungseinstellungen", FR: "Paramètres de répartition", ZH: "分配参数"},
     "lbl_course_col": {RU: "Курс:", EN: "Year:", ES: "Curso:", IT: "Anno:", DE: "Jahr:", FR: "Année :", ZH: "年级："},
     "lbl_subject_col": {RU: "Предмет:", EN: "Subject:", ES: "Asignatura:", IT: "Materia:", DE: "Fach:", FR: "Matière :", ZH: "科目："},
@@ -234,7 +200,6 @@ TEXTS: dict[str, dict[str, str]] = {
         ZH: "— 该年级没有科目 —",
     },
 
-    # --- Вкладка 6. Расписание ---
     "btn_del_sched": {RU: "🗑 Удалить выбранные занятия", EN: "🗑 Delete selected lessons", ES: "🗑 Eliminar clases", IT: "🗑 Elimina lezioni", DE: "🗑 Ausgewählte Stunden löschen", FR: "🗑 Supprimer les séances", ZH: "🗑 删除所选课程"},
     "btn_clear_sched": {RU: "Очистить всё расписание", EN: "Clear timetable", ES: "Borrar horario", IT: "Cancella orario", DE: "Stundenplan löschen", FR: "Effacer l'emploi du temps", ZH: "清空课程表"},
     "btn_to_table": {RU: "➡ В таблицу (7)", EN: "➡ To grid (7)", ES: "➡ A la tabla (7)", IT: "➡ Alla tabella (7)", DE: "➡ Zur Tabelle (7)", FR: "➡ Vers le tableau (7)", ZH: "➡ 转到表格 (7)"},
@@ -246,10 +211,8 @@ TEXTS: dict[str, dict[str, str]] = {
     "sched_hdr_aud": {RU: "Аудитория", EN: "Room", ES: "Aula", IT: "Aula", DE: "Raum", FR: "Salle", ZH: "教室"},
     "sched_hdr_day": {RU: "День", EN: "Day", ES: "Día", IT: "Giorno", DE: "Tag", FR: "Jour", ZH: "星期"},
 
-    # --- Вкладка 7. Таблица (календарь) ---
     "cal_teacher": {RU: "Преподаватель:", EN: "Teacher:", ES: "Profesor:", IT: "Docente:", DE: "Lehrkraft:", FR: "Enseignant :", ZH: "教师："},
 
-    # --- Вкладка 8. Настройки ---
     "set_title": {RU: "Язык интерфейса", EN: "Interface language", ES: "Idioma de la interfaz", IT: "Lingua dell'interfaccia", DE: "Sprache der Oberfläche", FR: "Langue de l'interface", ZH: "界面语言"},
     "set_lang_label": {RU: "Язык:", EN: "Language:", ES: "Idioma:", IT: "Lingua:", DE: "Sprache:", FR: "Langue :", ZH: "语言："},
     "set_hint": {
@@ -271,14 +234,12 @@ TEXTS: dict[str, dict[str, str]] = {
         ZH: "语言已应用。",
     },
 
-    # --- Дни недели (0=Пн .. 4=Пт) ---
     "weekday_0": {RU: "Пн", EN: "Mon", ES: "Lun", IT: "Lun", DE: "Mo", FR: "Lun", ZH: "周一"},
     "weekday_1": {RU: "Вт", EN: "Tue", ES: "Mar", IT: "Mar", DE: "Di", FR: "Mar", ZH: "周二"},
     "weekday_2": {RU: "Ср", EN: "Wed", ES: "Mié", IT: "Mer", DE: "Mi", FR: "Mer", ZH: "周三"},
     "weekday_3": {RU: "Чт", EN: "Thu", ES: "Jue", IT: "Gio", DE: "Do", FR: "Jeu", ZH: "周四"},
     "weekday_4": {RU: "Пт", EN: "Fri", ES: "Vie", IT: "Ven", DE: "Fr", FR: "Ven", ZH: "周五"},
 
-    # --- Шаблон "N курс" ({n} заменится на номер) ---
     "course_fmt": {
         RU: "{n} курс",
         EN: "Year {n}",
@@ -292,11 +253,6 @@ TEXTS: dict[str, dict[str, str]] = {
 
 
 def tr(key: str) -> str:
-    """Взять текст по ключу на текущем языке.
-
-    Если ключа нет - вернуть сам ключ (чтобы было видно, что забыли перевести).
-    Если нет перевода на текущий язык - взять русский.
-    """
     entry = TEXTS.get(key)
     if entry is None:
         return key
@@ -304,10 +260,8 @@ def tr(key: str) -> str:
 
 
 def weekday_names() -> list[str]:
-    # Названия дней Пн..Пт на текущем языке (для календаря и списков дней).
     return [tr(f"weekday_{i}") for i in range(5)]
 
 
 def course_name(n: int) -> str:
-    # "N курс" на текущем языке, например "2 курс" / "Year 2" / "Curso 2" / "Anno 2".
     return tr("course_fmt").format(n=n)
