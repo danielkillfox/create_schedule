@@ -1,4 +1,29 @@
 
+# main_window.py
+# =====================================================================
+# ГЛАВНОЕ ОКНО программы (все 8 вкладок живут здесь).
+# Простыми словами, что за вкладки:
+#   1. Группы        - список студенческих групп (название, число людей, курс).
+#   2. Аудитории     - список залов (название, места, тип лекция/практика).
+#   3. Преподаватели - люди + какие предметы и залы за ними закреплены.
+#   4. Предметы      - названия предметов + на каких курсах они есть.
+#   5. Распределение - "мозг": выбираем курс/предмет/препода и раскладываем группы по залам.
+#   6. Расписание    - итоговая таблица занятий преподавателя (можно менять день, удалять).
+#   7. Таблица       - красивый календарь Пн-Пт x пары 1-6 (файл calendar_tab.py).
+#   8. Настройки     - выбор языка интерфейса (русский, английский, испанский,
+#                      итальянский, немецкий, французский, китайский).
+# Языки: все подписи берутся из модуля lang.py через tr("ключ").
+# Чтобы язык переключался без перезапуска, виджеты регистрируются через
+# _t/_tg/_th, а retranslate_ui() обновляет их все разом.
+# Как читать этот файл:
+#   _build_*  = "построить внешний вид вкладки" (кнопки, таблицы).
+#   reload_*  = "перечитать данные из базы и показать их".
+#   add_*/delete_* = "добавить/удалить одну строчку".
+#   on_*      = "что делать, когда человек что-то нажал или поменял".
+# Хитрость: сигналы блокируем через signals_blocked, чтобы при программном
+# заполнении таблицы она не думала, что человек что-то отредактировал.
+# =====================================================================
+
 from contextlib import contextmanager
 
 from PyQt6.QtWidgets import (
@@ -12,13 +37,17 @@ from PyQt6.QtCore import Qt
 from db import DB, KIND_LECTURE, KIND_PRACTICE
 from calendar_tab import CalendarTab, WEEKDAYS
 import distributor
+import lang  # переводы интерфейса: lang.tr("ключ") даёт текст на текущем языке
+from lang import tr
 
 
-KIND_LABELS = {KIND_LECTURE: "Лекция", KIND_PRACTICE: "Практика"}
+KIND_LABELS = {KIND_LECTURE: tr("kind_lecture"), KIND_PRACTICE: tr("kind_practice")}  # перевод типа занятия для человека (обновляется в retranslate_ui)
 
 
 @contextmanager
 def signals_blocked(widget):
+    # Помощник: "закрой уши" виджету, пока мы его заполняем программно.
+    # Без этого каждое вставленное значение вызывало бы обработчики, как будто человек печатает.
     widget.blockSignals(True)
     try:
         yield widget
@@ -27,14 +56,23 @@ def signals_blocked(widget):
 
 
 class MainWindow(QWidget):
+    # Само главное окно. Создаётся один раз при запуске программы.
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Распределение групп по аудиториям и парам")
+        # Реестр текстов для переключения языка "на лету":
+        # _tr_texts = [(виджет, ключ), ...] -> поменять setText,
+        # _tr_titles = [(виджет, ключ), ...] -> поменять setTitle (рамки QGroupBox),
+        # _tr_tables = [(таблица, [ключи]), ...] -> поменять заголовки колонок.
+        # retranslate_ui() проходит по этим спискам и ставит тексты текущего языка.
+        self._tr_texts: list = []
+        self._tr_titles: list = []
+        self._tr_tables: list = []
+        self.setWindowTitle(tr("app_title"))
         self.resize(1200, 950)
 
-        self.db = DB("schedule.db")
-        self._last_context: dict | None = None
-        self._last_result: distributor.DistributionResult | None = None
+        self.db = DB("schedule.db")  # подключаем базу (файл schedule.db)
+        self._last_context: dict | None = None  # запоминаем последнее распределение: какой курс/предмет/препод
+        self._last_result: distributor.DistributionResult | None = None  # и его результат (кто куда сел)
 
         layout = QVBoxLayout()
         layout.setSpacing(12)
@@ -42,12 +80,12 @@ class MainWindow(QWidget):
 
         excel_bar = QHBoxLayout()
         excel_bar.addStretch(1)
-        self.btn_export_excel = QPushButton("Экспорт в Excel")
-        self.btn_export_excel.setToolTip("Выгрузить все данные в файл .xlsx")
+        self.btn_export_excel = self._t(QPushButton(), "btn_export")
+        self.btn_export_excel.setToolTip(tr("btn_export_tip"))
         self.btn_export_excel.clicked.connect(self.export_excel)
         excel_bar.addWidget(self.btn_export_excel)
-        self.btn_import_excel = QPushButton("Импорт из Excel")
-        self.btn_import_excel.setToolTip("Загрузить данные из файла .xlsx")
+        self.btn_import_excel = self._t(QPushButton(), "btn_import")
+        self.btn_import_excel.setToolTip(tr("btn_import_tip"))
         self.btn_import_excel.clicked.connect(self.import_excel)
         excel_bar.addWidget(self.btn_import_excel)
         layout.addLayout(excel_bar)
@@ -62,14 +100,21 @@ class MainWindow(QWidget):
         self.tab_distribute = QWidget()
         self.tab_schedule = QWidget()
         self.tab_calendar = CalendarTab(self.db)
+        self.tab_settings = QWidget()  # вкладка 8: настройки (выбор языка)
 
-        self.tabs.addTab(self.tab_groups, "1. Группы")
-        self.tabs.addTab(self.tab_auds, "2. Аудитории")
-        self.tabs.addTab(self.tab_teachers, "3. Преподаватели")
-        self.tabs.addTab(self.tab_subjects, "4. Предметы")
-        self.tabs.addTab(self.tab_distribute, "5. Распределение")
-        self.tabs.addTab(self.tab_schedule, "6. Расписание")
-        self.tabs.addTab(self.tab_calendar, "7. Таблица")
+        # Ключи названий вкладок по порядку - используются и здесь, и в retranslate_ui().
+        self._tab_keys = [
+            "tab_groups", "tab_auds", "tab_teachers", "tab_subjects",
+            "tab_distribute", "tab_schedule", "tab_calendar", "tab_settings",
+        ]
+        self.tabs.addTab(self.tab_groups, tr("tab_groups"))
+        self.tabs.addTab(self.tab_auds, tr("tab_auds"))
+        self.tabs.addTab(self.tab_teachers, tr("tab_teachers"))
+        self.tabs.addTab(self.tab_subjects, tr("tab_subjects"))
+        self.tabs.addTab(self.tab_distribute, tr("tab_distribute"))
+        self.tabs.addTab(self.tab_schedule, tr("tab_schedule"))
+        self.tabs.addTab(self.tab_calendar, tr("tab_calendar"))
+        self.tabs.addTab(self.tab_settings, tr("tab_settings"))
 
         self._build_groups_tab()
         self._build_auds_tab()
@@ -77,6 +122,7 @@ class MainWindow(QWidget):
         self._build_subjects_tab()
         self._build_distribute_tab()
         self._build_schedule_tab()
+        self._build_settings_tab()  # построить вкладку настроек
 
         self.setLayout(layout)
 
@@ -87,34 +133,91 @@ class MainWindow(QWidget):
         self.reload_courses()
         self.reload_schedule_teachers()
 
+    # --- Помощники переводов (для вкладки 8. Настройки) ---
+    # _t/_tg/_th ставят текст на текущем языке и запоминают виджет,
+    # чтобы retranslate_ui() мог обновить его при смене языка.
 
-    # ГРУППЫ
+    def _t(self, widget, key):
+        # Обычный виджет (кнопка, подпись): текст через setText.
+        # Возвращает тот же виджет, поэтому можно писать: form.addWidget(self._t(QLabel(), "lbl_name"))
+        widget.setText(tr(key))
+        self._tr_texts.append((widget, key))
+        return widget
+
+    def _tg(self, groupbox, key):
+        # Рамка QGroupBox: заголовок ставится через setTitle.
+        groupbox.setTitle(tr(key))
+        self._tr_titles.append((groupbox, key))
+        return groupbox
+
+    def _th(self, table, keys):
+        # Таблица: заголовки колонок по списку ключей.
+        table.setHorizontalHeaderLabels([tr(k) for k in keys])
+        self._tr_tables.append((table, keys))
+        return table
+
+    @staticmethod
+    def _fill_kind_combo(combo):
+        # Заполнить список типами занятия ("Лекция"/"Практика" на текущем языке), сохранив выбор.
+        prev = combo.currentData()
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItem(tr("kind_lecture"), KIND_LECTURE)
+            combo.addItem(tr("kind_practice"), KIND_PRACTICE)
+            if prev is not None:
+                idx = combo.findData(prev)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+        finally:
+            combo.blockSignals(False)
+
+    @staticmethod
+    def _fill_course_combo(combo):
+        # Заполнить список пунктами "N курс" на текущем языке (1..6), сохранив выбор.
+        prev = combo.currentData()
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            for n in range(1, 7):
+                combo.addItem(lang.course_name(n), n)
+            if prev is not None:
+                idx = combo.findData(int(prev))
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+        finally:
+            combo.blockSignals(False)
+
+
+    # ГРУППЫ (вкладка 1: добавить/переименовать/удалить группы)
+    # Таблица хранит в скрытом виде id группы (UserRole), чтобы знать, какую строчку менять в базе.
 
     def _build_groups_tab(self):
+        # Построить внешний вид вкладки: форма "добавить" сверху, таблица посередине, кнопки снизу.
         v = QVBoxLayout()
         self.tab_groups.setLayout(v)
 
-        box = QGroupBox("Добавить группу")
+        box = self._tg(QGroupBox(), "box_add_group")
         form = QHBoxLayout()
-        form.addWidget(QLabel("Название:"))
+        form.addWidget(self._t(QLabel(), "lbl_name"))
         self.g_name = QLineEdit()
         self.g_name.setPlaceholderText("")
         form.addWidget(self.g_name, 3)
-        form.addWidget(QLabel("Студентов:"))
+        form.addWidget(self._t(QLabel(), "lbl_students"))
         self.g_students = QSpinBox(minimum=1, maximum=10000, value=20)
         form.addWidget(self.g_students)
-        form.addWidget(QLabel("Курс:"))
+        form.addWidget(self._t(QLabel(), "lbl_course"))
         self.g_course = QSpinBox(minimum=1, maximum=6, value=1)
         form.addWidget(self.g_course)
-        btn = QPushButton("Добавить")
+        btn = self._t(QPushButton(), "btn_add")
         btn.clicked.connect(self.add_group)
         form.addWidget(btn)
         box.setLayout(form)
         v.addWidget(box)
 
-        v.addWidget(QLabel("Список групп:"))
+        v.addWidget(self._t(QLabel(), "lbl_groups_list"))
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Группа", "Кол-во людей", "Курс"])
+        self._th(self.table, ["hdr_group", "hdr_people", "hdr_course"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
@@ -130,11 +233,11 @@ class MainWindow(QWidget):
         v.addWidget(self.table)
 
         btns = QHBoxLayout()
-        del_btn = QPushButton("Удалить выбранную")
+        del_btn = self._t(QPushButton(), "btn_delete_sel")
         del_btn.clicked.connect(self.delete_selected_group)
-        reload_btn = QPushButton("Обновить из БД")
+        reload_btn = self._t(QPushButton(), "btn_reload")
         reload_btn.clicked.connect(self.refresh_groups_ui)
-        clear_btn = QPushButton("Очистить все группы")
+        clear_btn = self._t(QPushButton(), "btn_clear_groups")
         clear_btn.clicked.connect(self.clear_groups)
         btns.addWidget(del_btn)
         btns.addStretch()
@@ -143,6 +246,7 @@ class MainWindow(QWidget):
         v.addLayout(btns)
 
     def reload_groups(self):
+        # Перечитать все группы из базы и показать их в таблице (старое стираем, новое вставляем).
         with signals_blocked(self.table):
             self.table.setRowCount(0)
             for g in self.db.get_groups():
@@ -156,11 +260,14 @@ class MainWindow(QWidget):
             self.table.clearSelection()
 
     def refresh_groups_ui(self):
+        # Кнопка "Обновить из БД": перечитать группы + обновить список курсов на вкладке 5.
         self.reload_groups()
         if hasattr(self, "course_combo"):
             self.reload_courses()
 
     def on_group_item_changed(self, item):
+        # Человек отредактировал клетку прямо в таблице (двойной клик).
+        # Проверяем: имя не пустое, числа - числа, курс 1..6. Если плохо - ругаемся и откатываем.
 
         row = item.row()
         id_item = self.table.item(row, 0)
@@ -209,6 +316,7 @@ class MainWindow(QWidget):
         self.reload_courses()
 
     def add_group(self):
+        # Кнопка "Добавить": берём текст из полей, просим базу сохранить, очищаем поле и обновляем таблицы.
         name = self.g_name.text().strip()
         if not name:
             QMessageBox.warning(self, "Ошибка", "Введите название группы.")
@@ -223,6 +331,7 @@ class MainWindow(QWidget):
         self.reload_courses()
 
     def delete_selected_group(self):
+        # Удалить выделенную строку: спрашиваем "точно?", потом удаляем из базы.
         row = self.table.currentRow()
         if row < 0:
             return
@@ -245,6 +354,7 @@ class MainWindow(QWidget):
         self.reload_courses()
 
     def clear_groups(self):
+        # Кнопка "Очистить все": удаляет вообще всё (с вопросом-подтверждением).
         if QMessageBox.question(self, "Очистка", "Удалить ВСЕ группы?") \
                 != QMessageBox.StandardButton.Yes:
             return
@@ -256,35 +366,36 @@ class MainWindow(QWidget):
         self.reload_courses()
 
 
-    #  АУДИТОРИИ
+    #  АУДИТОРИИ (вкладка 2: залы. Тип "лекция/практика" меняется списком прямо в таблице)
 
     def _build_auds_tab(self):
+        # Построить вкладку аудиторий: форма добавления + таблица + кнопки.
         v = QVBoxLayout()
         self.tab_auds.setLayout(v)
 
-        box = QGroupBox("Добавить аудиторию")
+        box = self._tg(QGroupBox(), "box_add_aud")
         form = QHBoxLayout()
-        form.addWidget(QLabel("Название:"))
+        form.addWidget(self._t(QLabel(), "lbl_name"))
         self.a_name = QLineEdit()
         self.a_name.setPlaceholderText("")
         form.addWidget(self.a_name, 3)
-        form.addWidget(QLabel("Вместимость:"))
+        form.addWidget(self._t(QLabel(), "lbl_capacity"))
         self.a_capacity = QSpinBox(minimum=1, maximum=10000, value=25)
         form.addWidget(self.a_capacity)
-        form.addWidget(QLabel("Тип:"))
+        form.addWidget(self._t(QLabel(), "lbl_type"))
         self.a_kind = QComboBox()
-        self.a_kind.addItem("Лекция", KIND_LECTURE)
-        self.a_kind.addItem("Практика", KIND_PRACTICE)
+        self.a_kind.addItem(tr("kind_lecture"), KIND_LECTURE)
+        self.a_kind.addItem(tr("kind_practice"), KIND_PRACTICE)
         form.addWidget(self.a_kind)
-        btn = QPushButton("Добавить")
+        btn = self._t(QPushButton(), "btn_add")
         btn.clicked.connect(self.add_auditorium)
         form.addWidget(btn)
         box.setLayout(form)
         v.addWidget(box)
 
-        v.addWidget(QLabel("Список аудиторий:"))
+        v.addWidget(self._t(QLabel(), "lbl_auds_list"))
         self.aud_table = QTableWidget(0, 3)
-        self.aud_table.setHorizontalHeaderLabels(["Аудитория", "Вместимость", "Тип"])
+        self._th(self.aud_table, ["hdr_aud", "hdr_capacity", "hdr_type"])
         self.aud_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.aud_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         self.aud_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
@@ -300,11 +411,11 @@ class MainWindow(QWidget):
         v.addWidget(self.aud_table)
 
         btns = QHBoxLayout()
-        del_btn = QPushButton("Удалить выбранную")
+        del_btn = self._t(QPushButton(), "btn_delete_sel")
         del_btn.clicked.connect(self.delete_selected_aud)
-        reload_btn = QPushButton("Обновить из БД")
+        reload_btn = self._t(QPushButton(), "btn_reload")
         reload_btn.clicked.connect(self.refresh_auds_ui)
-        clear_btn = QPushButton("Очистить все аудитории")
+        clear_btn = self._t(QPushButton(), "btn_clear_auds")
         clear_btn.clicked.connect(self.clear_auditoriums)
         btns.addWidget(del_btn)
         btns.addStretch()
@@ -324,8 +435,8 @@ class MainWindow(QWidget):
                 self.aud_table.setItem(r, 1, QTableWidgetItem(str(a.capacity)))
 
                 combo = QComboBox()
-                combo.addItem("Лекция", KIND_LECTURE)
-                combo.addItem("Практика", KIND_PRACTICE)
+                combo.addItem(tr("kind_lecture"), KIND_LECTURE)
+                combo.addItem(tr("kind_practice"), KIND_PRACTICE)
                 combo.setCurrentIndex(0 if a.kind == KIND_LECTURE else 1)
                 combo.currentIndexChanged.connect(
                     lambda _i, aid=a.id, c=combo: self._on_aud_kind_changed(aid, c.currentData())
@@ -444,19 +555,20 @@ class MainWindow(QWidget):
         self.on_teacher_selected()
 
 
-    #  ПРЕПОДАВАТЕЛИ
+    # ПРЕПОДАВАТЕЛИ (вкладка 3: слева люди, посередине их предметы, справа их залы)
 
     def _build_teachers_tab(self):
+        # Три колонки: люди | их предметы + кнопка "привязать" | их залы + кнопка "привязать".
         v = QVBoxLayout()
         self.tab_teachers.setLayout(v)
 
-        box = QGroupBox("Добавить преподавателя")
+        box = self._tg(QGroupBox(), "box_add_teacher")
         form = QHBoxLayout()
-        form.addWidget(QLabel("Имя:"))
+        form.addWidget(self._t(QLabel(), "lbl_person"))
         self.t_name = QLineEdit()
         self.t_name.setPlaceholderText("")
         form.addWidget(self.t_name, 1)
-        btn = QPushButton("Добавить")
+        btn = self._t(QPushButton(), "btn_add")
         btn.clicked.connect(self.add_teacher)
         form.addWidget(btn)
         box.setLayout(form)
@@ -465,44 +577,44 @@ class MainWindow(QWidget):
         h = QHBoxLayout()
 
         left = QVBoxLayout()
-        left.addWidget(QLabel("Преподаватели:"))
+        left.addWidget(self._t(QLabel(), "lbl_teachers"))
         self.teachers_table = QTableWidget(0, 1)
-        self.teachers_table.setHorizontalHeaderLabels(["Имя"])
+        self._th(self.teachers_table, ["hdr_teacher_name"])
         self.teachers_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.teachers_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.teachers_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.teachers_table.itemSelectionChanged.connect(self.on_teacher_selected)
         left.addWidget(self.teachers_table)
 
-        del_t = QPushButton("Удалить преподавателя")
+        del_t = self._t(QPushButton(), "btn_del_teacher")
         del_t.clicked.connect(self.delete_selected_teacher)
         left.addWidget(del_t)
 
         mid = QVBoxLayout()
-        mid.addWidget(QLabel("Предметы преподавателя:"))
+        mid.addWidget(self._t(QLabel(), "lbl_teacher_subjects"))
         self.teacher_subjects_table = QTableWidget(0, 1)
-        self.teacher_subjects_table.setHorizontalHeaderLabels(["Предмет"])
+        self._th(self.teacher_subjects_table, ["hdr_subject_name"])
         self.teacher_subjects_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.teacher_subjects_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         mid.addWidget(self.teacher_subjects_table)
 
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Привязать:"))
+        row1.addWidget(self._t(QLabel(), "lbl_bind"))
         self.subj_for_teacher_combo = QComboBox()
         row1.addWidget(self.subj_for_teacher_combo, 1)
-        btn1 = QPushButton("Привязать")
+        btn1 = self._t(QPushButton(), "btn_bind")
         btn1.clicked.connect(self.assign_subject_to_teacher)
         row1.addWidget(btn1)
         mid.addLayout(row1)
 
-        unassign_subj = QPushButton("Отвязать выбранный предмет")
+        unassign_subj = self._t(QPushButton(), "btn_unbind_subject")
         unassign_subj.clicked.connect(self.unassign_subject_from_teacher)
         mid.addWidget(unassign_subj)
 
         right = QVBoxLayout()
-        right.addWidget(QLabel("Аудитории преподавателя:"))
+        right.addWidget(self._t(QLabel(), "lbl_teacher_auds"))
         self.teacher_auds_table = QTableWidget(0, 2)
-        self.teacher_auds_table.setHorizontalHeaderLabels(["Аудитория", "Тип"])
+        self._th(self.teacher_auds_table, ["hdr_aud_name", "hdr_type"])
         self.teacher_auds_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.teacher_auds_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         self.teacher_auds_table.setColumnWidth(1, 100)
@@ -510,15 +622,15 @@ class MainWindow(QWidget):
         right.addWidget(self.teacher_auds_table)
 
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Привязать:"))
+        row2.addWidget(self._t(QLabel(), "lbl_bind"))
         self.aud_for_teacher_combo = QComboBox()
         row2.addWidget(self.aud_for_teacher_combo, 1)
-        btn2 = QPushButton("Привязать")
+        btn2 = self._t(QPushButton(), "btn_bind")
         btn2.clicked.connect(self.assign_auditorium_to_teacher)
         row2.addWidget(btn2)
         right.addLayout(row2)
 
-        unassign_aud = QPushButton("Отвязать выбранную аудиторию")
+        unassign_aud = self._t(QPushButton(), "btn_unbind_aud")
         unassign_aud.clicked.connect(self.unassign_auditorium_from_teacher)
         right.addWidget(unassign_aud)
 
@@ -711,19 +823,20 @@ class MainWindow(QWidget):
         return item.data(Qt.ItemDataRole.UserRole)
 
 
-    # ПРЕДМЕТЫ
+    # ПРЕДМЕТЫ (вкладка 4: слева предметы, справа - на каких курсах каждый предмет есть)
 
     def _build_subjects_tab(self):
+        # Слева список предметов + кнопка удалить, справа курсы предмета + кнопки добавить/убрать.
         v = QVBoxLayout()
         self.tab_subjects.setLayout(v)
 
-        box = QGroupBox("Добавить предмет")
+        box = self._tg(QGroupBox(), "box_add_subject")
         form = QHBoxLayout()
-        form.addWidget(QLabel("Название:"))
+        form.addWidget(self._t(QLabel(), "lbl_name"))
         self.s_name = QLineEdit()
         self.s_name.setPlaceholderText("")
         form.addWidget(self.s_name, 1)
-        btn = QPushButton("Добавить")
+        btn = self._t(QPushButton(), "btn_add")
         btn.clicked.connect(self.add_subject)
         form.addWidget(btn)
         box.setLayout(form)
@@ -732,39 +845,38 @@ class MainWindow(QWidget):
         h = QHBoxLayout()
 
         left = QVBoxLayout()
-        left.addWidget(QLabel("Предметы:"))
+        left.addWidget(self._t(QLabel(), "lbl_subjects"))
         self.subjects_table = QTableWidget(0, 1)
-        self.subjects_table.setHorizontalHeaderLabels(["Название"])
+        self._th(self.subjects_table, ["hdr_subject_title"])
         self.subjects_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.subjects_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.subjects_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.subjects_table.itemSelectionChanged.connect(self.on_subject_selected)
         left.addWidget(self.subjects_table)
 
-        del_s = QPushButton("Удалить предмет")
+        del_s = self._t(QPushButton(), "btn_del_subject")
         del_s.clicked.connect(self.delete_selected_subject)
         left.addWidget(del_s)
 
         right = QVBoxLayout()
-        right.addWidget(QLabel("Привязанные курсы"))
+        right.addWidget(self._t(QLabel(), "lbl_subject_courses"))
         self.subject_courses_table = QTableWidget(0, 1)
-        self.subject_courses_table.setHorizontalHeaderLabels(["Курс"])
+        self._th(self.subject_courses_table, ["hdr_course_col"])
         self.subject_courses_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.subject_courses_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         right.addWidget(self.subject_courses_table)
 
         add_row = QHBoxLayout()
-        add_row.addWidget(QLabel("Добавить курс:"))
+        add_row.addWidget(self._t(QLabel(), "lbl_add_course"))
         self.course_for_subject_combo = QComboBox()
-        for n in range(1, 7):
-            self.course_for_subject_combo.addItem(f"{n} курс", n)
+        self._fill_course_combo(self.course_for_subject_combo)  # пункты "N курс" на текущем языке
         add_row.addWidget(self.course_for_subject_combo, 1)
-        add_btn = QPushButton("Добавить")
+        add_btn = self._t(QPushButton(), "btn_add")
         add_btn.clicked.connect(self.add_course_to_subject)
         add_row.addWidget(add_btn)
         right.addLayout(add_row)
 
-        del_btn = QPushButton("Убрать выбранный курс")
+        del_btn = self._t(QPushButton(), "btn_remove_course")
         del_btn.clicked.connect(self.remove_course_from_subject)
         right.addWidget(del_btn)
 
@@ -886,32 +998,31 @@ class MainWindow(QWidget):
         return item.data(Qt.ItemDataRole.UserRole)
 
 
-    # РАСПРЕДЕЛЕНИЕ ПО ПАРАМ
+    # РАСПРЕДЕЛЕНИЕ ПО ПАРАМ (вкладка 5 - самая главная!)
+    # Шаги человека: выбрать курс -> предмет -> препода -> тип (лекция/практика) ->
+    # отметить галочками группы -> нажать "Распределить" -> нажать "Записать в расписание".
+    # Лекция = весь поток вместе в один зал. Практика = не больше 2 групп в кабинете.
 
     def _build_distribute_tab(self):
+        # Строим вкладку: параметры сверху, группы с галочками, кнопки, результат (таблица/текст).
         v = QVBoxLayout()
         self.tab_distribute.setLayout(v)
 
-        sel_box = QGroupBox("Параметры распределения")
+        sel_box = self._tg(QGroupBox(), "box_params")
         form = QFormLayout()
         self.course_combo = QComboBox()
         self.subject_combo = QComboBox()
         self.teacher_combo = QComboBox()
         self.kind_combo = QComboBox()
-        self.kind_combo.addItem("Лекция", KIND_LECTURE)
-        self.kind_combo.addItem("Практика", KIND_PRACTICE)
+        self._fill_kind_combo(self.kind_combo)
 
-        form.addRow(QLabel("Курс:"), self.course_combo)
-        form.addRow(QLabel("Предмет:"), self.subject_combo)
-        form.addRow(QLabel("Преподаватель:"), self.teacher_combo)
-        form.addRow(QLabel("Тип занятия:"), self.kind_combo)
-        self.max2_checkbox = QCheckBox("Не больше 2 лекций в день")
-        self.max2_checkbox.setToolTip(
-            "При генерации лекции преподавателя раскладываются по дням Пн–Пт "
-            "так, чтобы в один день было не больше 2 лекций "
-            "(учитывается уже записанное расписание). Действует только для лекций."
-        )
-        form.addRow(QLabel("Фильтр:"), self.max2_checkbox)
+        form.addRow(self._t(QLabel(), "lbl_course_col"), self.course_combo)
+        form.addRow(self._t(QLabel(), "lbl_subject_col"), self.subject_combo)
+        form.addRow(self._t(QLabel(), "lbl_teacher_col"), self.teacher_combo)
+        form.addRow(self._t(QLabel(), "lbl_kind_col"), self.kind_combo)
+        self.max2_checkbox = self._t(QCheckBox(), "chk_max2")
+        self.max2_checkbox.setToolTip(tr("chk_max2_tip"))
+        form.addRow(self._t(QLabel(), "lbl_filter"), self.max2_checkbox)
         sel_box.setLayout(form)
         v.addWidget(sel_box)
 
@@ -921,10 +1032,10 @@ class MainWindow(QWidget):
         self.kind_combo.currentIndexChanged.connect(self.on_kind_changed)
         self.max2_checkbox.toggled.connect(self.on_max2_changed)
 
-        gbox = QGroupBox("Группы")
+        gbox = self._tg(QGroupBox(), "box_groups")
         gv = QVBoxLayout()
         self.groups_preview = QTableWidget(0, 3)
-        self.groups_preview.setHorizontalHeaderLabels(["", "Группа", "Человек"])
+        self._th(self.groups_preview, ["hdr_tick", "hdr_group_col", "hdr_people_col"])
         hh = self.groups_preview.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -942,7 +1053,7 @@ class MainWindow(QWidget):
         v.addWidget(gbox)
 
         btns = QHBoxLayout()
-        run_btn = QPushButton("Распределить по ячейкам")
+        run_btn = self._t(QPushButton(), "btn_run")
         run_btn.setStyleSheet(
             "QPushButton { font-weight: bold; background-color: #2e7d32; "
             "padding: 10px 16px; font-size: 14px; }"
@@ -951,7 +1062,7 @@ class MainWindow(QWidget):
         run_btn.clicked.connect(self.distribute)
         btns.addWidget(run_btn, 2)
 
-        save_btn = QPushButton("Записать в расписание")
+        save_btn = self._t(QPushButton(), "btn_save")
         save_btn.setStyleSheet(
             "QPushButton { font-weight: bold; background-color: #1565c0; "
             "padding: 10px 16px; font-size: 14px; }"
@@ -962,7 +1073,7 @@ class MainWindow(QWidget):
         v.addLayout(btns)
 
         # --- Одна длинная кнопка «Распределить и записать» ---
-        auto_btn = QPushButton("Распределить и сразу записать в расписание")
+        auto_btn = self._t(QPushButton(), "btn_auto")
         auto_btn.setStyleSheet(
             "QPushButton { font-weight: bold; background-color: #FF0000; "
             "padding: 6px 12px; font-size: 13px; }"
@@ -972,9 +1083,11 @@ class MainWindow(QWidget):
         auto_btn.clicked.connect(self.distribute_and_write)
         v.addWidget(auto_btn)
 
-        rbox = QGroupBox("Результат")
+        rbox = self._tg(QGroupBox(), "box_result")
         rv = QVBoxLayout()
-        self.toggle_btn = QPushButton("Показать текст")
+        # Кнопка-переключатель "таблица/текст": её текст зависит от режима,
+        # поэтому в общий реестр не добавляем - обновляем вручную в _show_result_*().
+        self.toggle_btn = QPushButton(tr("btn_show_text"))
         self.toggle_btn.clicked.connect(self.toggle_result_mode)
         rv.addWidget(self.toggle_btn)
 
@@ -992,9 +1105,8 @@ class MainWindow(QWidget):
         self.table_result = QTableWidget()
         self.table_result.setVisible(True)
         self.table_result.setColumnCount(6)
-        self.table_result.setHorizontalHeaderLabels(
-            ["Ячейка", "Аудитория", "Группы", "Человек", "Заполнено", "Прогресс"]
-        )
+        self._th(self.table_result, ["hdr_cell", "hdr_aud_col", "hdr_groups_col",
+                                     "hdr_people_col", "hdr_filled", "hdr_progress"])
         header = self.table_result.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
@@ -1014,15 +1126,17 @@ class MainWindow(QWidget):
         v.addWidget(rbox)
 
     def reload_courses(self):
+        # Обновить список курсов (берём из групп: какие курсы вообще есть).
+        # Стараемся сохранить то, что человек уже выбрал (prev_course/prev_subject).
         prev_course = self.course_combo.currentData()
         prev_subject = self.subject_combo.currentData()
         with signals_blocked(self.course_combo):
             self.course_combo.clear()
             courses = sorted({g["course"] for g in self.db.get_groups()})
             for n in courses:
-                self.course_combo.addItem(f"{n} курс", int(n))
+                self.course_combo.addItem(lang.course_name(int(n)), int(n))
             if not courses:
-                self.course_combo.addItem("— нет групп —", None)
+                self.course_combo.addItem(tr("no_groups"), None)
             elif prev_course is not None:
                 idx = self.course_combo.findData(int(prev_course))
                 if idx >= 0:
@@ -1030,14 +1144,15 @@ class MainWindow(QWidget):
         self.on_course_changed(keep_subject=prev_subject)
 
     def on_course_changed(self, _idx=None, keep_subject=None):
+        # Человек сменил курс: подгружаем его предметы и его группы (все с галочками "включено").
         course = self.course_combo.currentData()
         if course is None:
             with signals_blocked(self.subject_combo):
                 self.subject_combo.clear()
-                self.subject_combo.addItem("— нет предметов —", None)
+                self.subject_combo.addItem(tr("no_subjects"), None)
             with signals_blocked(self.teacher_combo):
                 self.teacher_combo.clear()
-                self.teacher_combo.addItem("— не выбран —", None)
+                self.teacher_combo.addItem(tr("no_teacher"), None)
             self.groups_preview.setRowCount(0)
             self.summary_label.setText("")
             self.text_result.setText(
@@ -1054,7 +1169,7 @@ class MainWindow(QWidget):
             for s in subjects:
                 self.subject_combo.addItem(str(s["name"]), int(s["id"]))
             if not subjects:
-                self.subject_combo.addItem("— нет предметов у курса —", None)
+                self.subject_combo.addItem(tr("no_course_subjects"), None)
             elif prev_sid is not None:
                 idx = self.subject_combo.findData(int(prev_sid))
                 if idx >= 0:
@@ -1081,6 +1196,8 @@ class MainWindow(QWidget):
         self.on_subject_changed()
 
     def on_subject_changed(self, _idx=None, keep_teacher=None):
+        # Человек сменил предмет: подгружаем преподавателей, которые его ведут,
+        # и показываем ранее сохранённый черновик распределения (если был).
         sid = self.subject_combo.currentData()
         prev_tid = keep_teacher if keep_teacher is not None else self.teacher_combo.currentData()
         teachers: list[dict] = []
@@ -1088,7 +1205,7 @@ class MainWindow(QWidget):
             teachers = self.db.get_teachers_of_subject(int(sid))
         with signals_blocked(self.teacher_combo):
             self.teacher_combo.clear()
-            self.teacher_combo.addItem("— не выбран —", None)
+            self.teacher_combo.addItem(tr("no_teacher"), None)
             for t in teachers:
                 self.teacher_combo.addItem(str(t["name"]), int(t["id"]))
             if prev_tid is not None:
@@ -1242,12 +1359,12 @@ class MainWindow(QWidget):
     def _show_result_text(self):
         self.text_result.setVisible(True)
         self.table_result.setVisible(False)
-        self.toggle_btn.setText("Показать таблицу")
+        self.toggle_btn.setText(tr("btn_show_table"))
 
     def _show_result_table(self):
         self.text_result.setVisible(False)
         self.table_result.setVisible(True)
-        self.toggle_btn.setText("Показать текст")
+        self.toggle_btn.setText(tr("btn_show_text"))
 
     def toggle_result_mode(self):
         if self.table_result.isVisible():
@@ -1345,6 +1462,9 @@ class MainWindow(QWidget):
         )
 
     def distribute(self, silent: bool = False) -> bool:
+        # КНОПКА "Распределить": берём галочки групп + подходящие залы и вызываем раскладчик.
+        # silent=True = не показывать окна-ошибки (нужно для кнопки "Распределить и сразу записать").
+        # Сохраняет черновик в базу и рисует результат (текст + таблица). Возвращает True/False (получилось?).
         course = self.course_combo.currentData()
         subject_id = self.subject_combo.currentData()
         kind = self.kind_combo.currentData()
@@ -1473,7 +1593,7 @@ class MainWindow(QWidget):
                 slots.setdefault((p.weekday, p.cell), []).append(p)
             for (w, cell) in sorted(slots):
                 lines.append("")
-                lines.append(f"{WEEKDAYS[w]} · Пара {cell}:")
+                lines.append(f"{lang.weekday_names()[w]} · Пара {cell}:")
                 for p in sorted(slots[(w, cell)], key=lambda x: x.auditorium.name):
                     aud = p.auditorium
                     lines.append(
@@ -1534,7 +1654,7 @@ class MainWindow(QWidget):
 
             row = self.table_result.rowCount()
             self.table_result.insertRow(row)
-            cell_text = f"{cell} · {WEEKDAYS[_w]}" if with_days else str(cell)
+            cell_text = f"{cell} · {lang.weekday_names()[_w]}" if with_days else str(cell)
             self.table_result.setItem(row, 0, QTableWidgetItem(cell_text))
             self.table_result.setItem(row, 1, QTableWidgetItem(aud.name))
             self.table_result.setItem(row, 2, QTableWidgetItem(names))
@@ -1564,6 +1684,8 @@ class MainWindow(QWidget):
         self._show_result_table()
 
     def write_to_schedule(self, silent: bool = False):
+        # КНОПКА "Записать в расписание": берёт последнее распределение и дописывает его
+        # в расписание преподавателя (дубли пропускаются, накладки отклоняются с объяснением).
         if self._last_result is None or self._last_context is None:
             if not silent:
                 QMessageBox.warning(
@@ -1608,7 +1730,7 @@ class MainWindow(QWidget):
         if conflicts:
             shown = "\n".join(
                 f"• {c['group_name']} ({c['aud_name']}, пара {c['pair_number']}, "
-                f"{WEEKDAYS[c['weekday']]}) — занято: {c['busy_by']}"
+                f"{lang.weekday_names()[c['weekday']]}) — занято: {c['busy_by']}"
                 for c in conflicts[:5]
             )
             extra = f"\n…и ещё {len(conflicts) - 5}" if len(conflicts) > 5 else ""
@@ -1647,6 +1769,8 @@ class MainWindow(QWidget):
         return (added, total, conflicts)
 
     def distribute_and_write(self):
+        # КРАСНАЯ КНОПКА "Распределить и сразу записать": делает два шага выше одним нажатием
+        # и показывает одно итоговое окно вместо двух.
 
         # 1. Распределяем (без всплывающего окна)
         ok = self.distribute(silent=True)
@@ -1691,33 +1815,35 @@ class MainWindow(QWidget):
         self.on_schedule_teacher_changed()
 
 
-    #РАСПИСАНИЕ
+    # РАСПИСАНИЕ (вкладка 6: итоговая таблица занятий выбранного преподавателя)
+    # Каждую строку можно: удалить (выделить + кнопка), перенести на другой день (список "День").
 
     def _build_schedule_tab(self):
+        # Строим вкладку: выбор препода сверху, кнопки (обновить/удалить/очистить/в таблицу), сама таблица.
         v = QVBoxLayout()
         self.tab_schedule.setLayout(v)
 
         top = QHBoxLayout()
-        top.addWidget(QLabel("Преподаватель:"))
+        top.addWidget(self._t(QLabel(), "lbl_teacher_col"))
         self.schedule_teacher_combo = QComboBox()
         self.schedule_teacher_combo.currentIndexChanged.connect(self.on_schedule_teacher_changed)
         top.addWidget(self.schedule_teacher_combo, 1)
         v.addLayout(top)
 
         btns = QHBoxLayout()
-        refresh_btn = QPushButton("Обновить")
+        refresh_btn = self._t(QPushButton(), "btn_refresh")
         refresh_btn.clicked.connect(self.on_schedule_teacher_changed)
         btns.addWidget(refresh_btn)
 
-        del_btn = QPushButton("🗑 Удалить выбранные занятия")
+        del_btn = self._t(QPushButton(), "btn_del_sched")
         del_btn.clicked.connect(self.delete_selected_schedule_rows)
         btns.addWidget(del_btn)
 
-        clear_btn = QPushButton("Очистить всё расписание")
+        clear_btn = self._t(QPushButton(), "btn_clear_sched")
         clear_btn.clicked.connect(self.clear_current_teacher_schedule)
         btns.addWidget(clear_btn)
 
-        to_table_btn = QPushButton("➡ В таблицу (7)")
+        to_table_btn = self._t(QPushButton(), "btn_to_table")
         to_table_btn.setStyleSheet(
             "QPushButton { font-weight: bold; background-color: #2e7d32; }"
             "QPushButton:hover { background-color: #388e3c; }"
@@ -1728,11 +1854,10 @@ class MainWindow(QWidget):
         btns.addStretch()
         v.addLayout(btns)
 
-        v.addWidget(QLabel("Расписание"))
+        v.addWidget(self._t(QLabel(), "lbl_sched_table"))
         self.schedule_table = QTableWidget(0, 6)
-        self.schedule_table.setHorizontalHeaderLabels(
-            ["Предмет", "Тип", "Ячейка", "Группа", "Аудитория", "День"]
-        )
+        self._th(self.schedule_table, ["sched_hdr_subject", "sched_hdr_kind", "sched_hdr_cell",
+                                       "sched_hdr_group", "sched_hdr_aud", "sched_hdr_day"])
         hh = self.schedule_table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
@@ -1755,6 +1880,112 @@ class MainWindow(QWidget):
             QHeaderView.ResizeMode.ResizeToContents
         )
         v.addWidget(self.schedule_table)
+
+    # НАСТРОЙКИ (вкладка 8: выбор языка интерфейса)
+
+    def _build_settings_tab(self):
+        # Вкладка простая: рамка "Язык интерфейса", список из 4 языков и подсказка.
+        # При смене языка всё окно перерисовывается сразу (retranslate_ui),
+        # а выбор сохраняется в settings.json и не сбрасывается после перезапуска.
+        v = QVBoxLayout()
+        self.tab_settings.setLayout(v)
+
+        box = self._tg(QGroupBox(), "set_title")
+        form = QHBoxLayout()
+        form.addWidget(self._t(QLabel(), "set_lang_label"))
+        self.lang_combo = QComboBox()
+        for code in lang.SUPPORTED:
+            self.lang_combo.addItem(lang.LANGUAGE_NAMES[code], code)
+        idx = self.lang_combo.findData(lang.get_language())
+        if idx >= 0:
+            self.lang_combo.setCurrentIndex(idx)
+        self.lang_combo.currentIndexChanged.connect(self.on_language_changed)
+        form.addWidget(self.lang_combo, 1)
+        box.setLayout(form)
+        v.addWidget(box)
+
+        self.lang_hint = self._t(QLabel(), "set_hint")
+        self.lang_hint.setWordWrap(True)
+        self.lang_hint.setStyleSheet("color: #9aa;")
+        v.addWidget(self.lang_hint)
+
+        self.lang_status = QLabel("")
+        self.lang_status.setStyleSheet("color: #7fc97f;")
+        v.addWidget(self.lang_status)
+        v.addStretch(1)
+
+    def on_language_changed(self):
+        # Человек выбрал другой язык в списке: сохраняем и переводим всё окно.
+        code = self.lang_combo.currentData()
+        if code is None:
+            return
+        if code == lang.get_language():
+            return  # уже этот язык - делать нечего
+        lang.set_language(code)
+        self.retranslate_ui()
+        self.lang_status.setText(tr("set_done"))
+
+    def retranslate_ui(self):
+        # Перевести ВЕСЬ интерфейс на текущий язык без перезапуска:
+        # 1) заголовок окна и названия вкладок, 2) все тексты из реестра,
+        # 3) заголовки таблиц, 4) подсказки, 5) списки (типы занятий, курсы,
+        #    преподаватели...), 6) календарь на вкладке 7, 7) итоги распределения.
+        self.setWindowTitle(tr("app_title"))
+        for i, key in enumerate(self._tab_keys):
+            self.tabs.setTabText(i, tr(key))
+        for widget, key in self._tr_texts:
+            try:
+                widget.setText(tr(key))
+            except RuntimeError:
+                pass  # виджет уже удалён - пропускаем
+        for box, key in self._tr_titles:
+            try:
+                box.setTitle(tr(key))
+            except RuntimeError:
+                pass
+        for table, keys in self._tr_tables:
+            try:
+                table.setHorizontalHeaderLabels([tr(k) for k in keys])
+            except RuntimeError:
+                pass
+        # Подсказки (у них нет setText, только setToolTip).
+        self.btn_export_excel.setToolTip(tr("btn_export_tip"))
+        self.btn_import_excel.setToolTip(tr("btn_import_tip"))
+        self.max2_checkbox.setToolTip(tr("chk_max2_tip"))
+        # Подписи "Лекция/Практика" используются во многих местах через этот словарь -
+        # обновляем его, и все новые списки подхватят перевод.
+        KIND_LABELS[KIND_LECTURE] = tr("kind_lecture")
+        KIND_LABELS[KIND_PRACTICE] = tr("kind_practice")
+        # Списки с фиксированными пунктами пересоздаём (выбор сохраняем).
+        self._fill_kind_combo(self.a_kind)
+        self._fill_kind_combo(self.kind_combo)
+        self._fill_course_combo(self.course_for_subject_combo)
+        # ВНИМАНИЕ: reload_courses() ниже сбрасывает _last_result/_last_context,
+        # поэтому прячем их заранее и возвращаем после.
+        saved_result = self._last_result
+        saved_context = self._last_context
+        # Списки из базы перечитываем - они заодно подхватят переведённые заглушки
+        # ("не выбран", "нет групп"...) и подписи видов занятий.
+        self.reload_auditoriums()
+        self._reload_aud_for_teacher_combo()
+        self.reload_courses()
+        self._last_result = saved_result
+        self._last_context = saved_context
+        self.on_schedule_teacher_changed()
+        # Календарь на вкладке 7 (дни недели + подписи).
+        try:
+            self.tab_calendar.retranslate_ui()
+        except Exception:
+            pass
+        # Если было показано распределение - перерисовываем его итоги.
+        if self._last_result is not None and self._last_context is not None:
+            course = self._last_context.get("course", 0)
+            try:
+                self._render_text_result(course, self._last_result)
+                self._render_table_result(self._last_result)
+            except Exception:
+                pass
+        self._refresh_auditorium_summary()
 
     def reload_schedule_teachers(self):
         if not hasattr(self, "schedule_teacher_combo"):
@@ -1863,7 +2094,7 @@ class MainWindow(QWidget):
                     self.schedule_table.setItem(r, 4, item_aud)
 
                     day_combo = QComboBox()
-                    for i, dname in enumerate(WEEKDAYS):
+                    for i, dname in enumerate(lang.weekday_names()):
                         day_combo.addItem(dname, i)
                     idx = day_combo.findData(int(weekday))
                     if idx >= 0:
@@ -1969,9 +2200,10 @@ class MainWindow(QWidget):
         self.on_schedule_teacher_changed()
 
 
-    # ЭКСПОРТ / ИМПОРТ EXCEL
+    # ЭКСПОРТ / ИМПОРТ EXCEL (две кнопки сверху окна: выгрузить всё / загрузить всё)
 
     def _refresh_all_tabs(self):
+        # После импорта Excel обновить ВСЕ вкладки сразу, чтобы везде были свежие данные.
         self.reload_groups()
         self.reload_auditoriums()
         self.reload_teachers()
@@ -1985,6 +2217,7 @@ class MainWindow(QWidget):
                 pass
 
     def export_excel(self):
+        # Спросить "куда сохранить?", вызвать excel_io.export_to_excel и показать итог ("что сохранили").
         path, _ = QFileDialog.getSaveFileName(
             self, "Экспорт в Excel", "schedule_export.xlsx",
             "Excel (*.xlsx)",
@@ -2003,6 +2236,8 @@ class MainWindow(QWidget):
         QMessageBox.information(self, "Экспорт готов", f"Файл сохранён:\n{path}\n\n{details}")
 
     def import_excel(self):
+        # Спросить "какой файл открыть?", загрузить его через excel_io.import_from_excel,
+        # обновить все вкладки и показать отчёт (что добавилось / что с ошибками).
         path, _ = QFileDialog.getOpenFileName(
             self, "Импорт из Excel", "",
             "Excel (*.xlsx)",
@@ -2027,9 +2262,10 @@ class MainWindow(QWidget):
             report += f"\n\nОшибок в строках: {len(errors)} (первые 10):\n" + "\n".join(errors[:10])
         QMessageBox.information(self, "Импорт завершён", report)
 
-    # ЗАКРЫТИЕ
+    # ЗАКРЫТИЕ (чтобы не потерять данные при выходе)
 
     def closeEvent(self, event):
+        # При закрытии окна аккуратно закрываем базу (сохраняем всё) и только потом выходим.
         try:
             self.db.close()
         finally:

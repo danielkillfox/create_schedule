@@ -1,26 +1,46 @@
 
+# db.py
+# =====================================================================
+# БАЗА ДАННЫХ расписания (файл schedule.db рядом с программой).
+# Простыми словами:
+# - Это "шкаф с папками", где лежат все данные: группы, аудитории,
+#   преподаватели, предметы и связи между ними ("кто что ведёт", "кто где сидит").
+# - Класс DB - это "библиотекарь": вы просите "дай группы" или "добавь аудиторию",
+#   а он сам пишет правильные команды на языке SQL и следит, чтобы ничего не сломалось.
+# - Все изменения сохраняются сразу в файл, переживают перезапуск программы.
+# Главные понятия:
+#   KIND_LECTURE / KIND_PRACTICE = два типа занятий: "лекция" (все вместе) и "практика".
+#   _tx() = "сейф": если внутри произошла ошибка, все изменения откатываются назад.
+#   FOREIGN KEY / CASCADE = "верёвочки" между папками: удалил преподавателя -
+#                           его лишние связи тоже удалились сами.
+# =====================================================================
+
 import sqlite3
 from contextlib import contextmanager
 from typing import Optional
 
-from distributor import Group, Auditorium
+from distributor import Group, Auditorium  # карточки группы и аудитории из раскладчика
 
 
+# Два типа занятий. Храним их как короткие английские слова, а человеку показываем "Лекция/Практика".
 KIND_LECTURE = "lecture"
 KIND_PRACTICE = "practice"
 
 
 class DB:
+    # "Библиотекарь" базы. Создаётся один раз: db = DB("schedule.db"), потом db.add_group(...) и т.д.
     def __init__(self, path: str = "schedule.db"):
+        # Открываем файл базы (если файла нет - он создастся сам).
         self.conn: Optional[sqlite3.Connection] = sqlite3.connect(path)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys = ON")
-        self.c = self.conn.cursor()
-        self._course_cache: dict[int, int] = {}
-        self._init_schema()
+        self.conn.row_factory = sqlite3.Row  # чтобы читать данные по именам: row["name"]
+        self.conn.execute("PRAGMA foreign_keys = ON")  # включаем проверку связей
+        self.c = self.conn.cursor()  # "рука", которой выполняем команды
+        self._course_cache: dict[int, int] = {}  # шпаргалка: номер курса -> id в базе (чтобы не спрашивать дважды)
+        self._init_schema()  # создаём таблицы, если их ещё нет
 
-    # ==================== СХЕМА ====================
+    # ==================== СХЕМА (создание "полок шкафа") ====================
     def _init_schema(self) -> None:
+        # Создаём все таблицы разом. IF NOT EXISTS = "если полка уже есть - не ломай её".
         self.c.executescript('''
             CREATE TABLE IF NOT EXISTS courses (
                 id     INTEGER PRIMARY KEY,
@@ -116,7 +136,12 @@ class DB:
         self.conn.commit()
 
     def _migrate(self) -> None:
-        """Догоняем схему, если БД создана старой версией."""
+        """Догоняем схему, если БД создана старой версией.
+
+        Простыми словами: если у человека остался старый файл schedule.db,
+        где не хватает новых колонок (тип аудитории, номер пары, день недели),
+        мы аккуратно добавляем их командой ALTER TABLE, старые данные не трогаем.
+        """
         def cols(table: str) -> set[str]:
             return {r["name"] for r in self.c.execute(f"PRAGMA table_info({table})").fetchall()}
 
@@ -137,19 +162,23 @@ class DB:
                 "ALTER TABLE schedule ADD COLUMN weekday INTEGER NOT NULL DEFAULT 0"
             )
 
-    # ==================== фууу ТРАНЗАКЦИИ ====================
+    # ==================== фууу ТРАНЗАКЦИИ ("сейф" для данных) ====================
+    # Правило сейфа: либо сохраняются ВСЕ изменения внутри, либо НИ ОДНОГО
+    # (если случилась ошибка - всё откатывается назад, база не ломается).
 
     @contextmanager
     def _tx(self):
         try:
-            yield self.c
-            self.conn.commit()
+            yield self.c  # даём выполнить команды...
+            self.conn.commit()  # ...всё хорошо - сохраняем в файл
         except Exception:
-            self.conn.rollback()
+            self.conn.rollback()  # ...что-то пошло не так - отменяем всё
             raise
 
-    # ==================== КУРСЫ =================
+    # ==================== КУРСЫ (1, 2, 3... курс) =================
     def _get_or_create_course(self, number: int) -> int:
+        # Найти номер курса в базе или создать, если его ещё нет.
+        # Возвращает внутренний id курса (число, которое понимает база).
         number = int(number)
         cached = self._course_cache.get(number)
         if cached is not None:
@@ -160,8 +189,10 @@ class DB:
         self._course_cache[number] = cid
         return cid
 
-    # ================ ГРУППЫ ====================
+    # ================ ГРУППЫ (например, "ИСП-101", 25 человек, 2 курс) ====================
     def get_groups(self) -> list[dict]:
+        # Дать все группы, отсортированные по курсу и названию.
+        # JOIN courses нужен, чтобы вместо внутреннего id показать понятный номер курса.
         self.c.execute('''
             SELECT g.id, g.name, g.students, c.number AS course
             FROM groups g JOIN courses c ON c.id = g.course_id
@@ -170,6 +201,7 @@ class DB:
         return [dict(r) for r in self.c.fetchall()]
 
     def get_groups_by_course(self, course_number: int) -> list[Group]:
+        # Дать только группы одного курса (например, всех второкурсников) как карточки Group.
         self.c.execute('''
             SELECT g.id, g.name, g.students
             FROM groups g JOIN courses c ON c.id = g.course_id
@@ -180,6 +212,7 @@ class DB:
                 for r in self.c.fetchall()]
 
     def add_group(self, name: str, students: int, course_number: int) -> int:
+        # Добавить группу. Возвращает её новый номер (id).
         cid = self._get_or_create_course(course_number)
         with self._tx():
             self.c.execute(
@@ -189,14 +222,17 @@ class DB:
         return self.c.lastrowid
 
     def delete_group(self, gid: int) -> None:
+        # Удалить группу по номеру. Связанное расписание подчистится само (CASCADE).
         with self._tx():
             self.c.execute("DELETE FROM groups WHERE id = ?", (int(gid),))
 
     def clear_groups(self) -> None:
+        # Удалить ВСЕ группы разом (кнопка "Очистить"). Осторожно!
         with self._tx():
             self.c.execute("DELETE FROM groups")
 
     def update_group(self, gid: int, name: str, students: int, course_number: int) -> None:
+        # Переименовать / поменять число студентов / перевести на другой курс.
         cid = self._get_or_create_course(int(course_number))
         with self._tx():
             self.c.execute(
@@ -204,14 +240,16 @@ class DB:
                 (name, int(students), cid, int(gid)),
             )
 
-    # ================== АУДИТОРИИ =================
+    # ================== АУДИТОРИИ (залы: название, места, тип лекция/практика) =================
     def get_auditoriums(self) -> list[Auditorium]:
+        # Дать все аудитории по алфавиту как карточки Auditorium.
         self.c.execute("SELECT id, name, capacity, kind FROM auditoriums ORDER BY name")
         return [Auditorium(id=r["id"], name=r["name"],
                            capacity=r["capacity"], kind=r["kind"])
                 for r in self.c.fetchall()]
 
     def add_auditorium(self, name: str, capacity: int, kind: str = KIND_LECTURE) -> int:
+        # Добавить зал. Тип проверяем: только "lecture" или "practice", иначе ругаемся.
         if kind not in (KIND_LECTURE, KIND_PRACTICE):
             raise ValueError(f"Некорректный тип аудитории: {kind!r}")
         with self._tx():
@@ -222,12 +260,14 @@ class DB:
         return self.c.lastrowid
 
     def update_auditorium_kind(self, aid: int, kind: str) -> None:
+        # Сменить только тип зала (из лекционного в практический и наоборот).
         if kind not in (KIND_LECTURE, KIND_PRACTICE):
             raise ValueError(f"Некорректный тип аудитории: {kind!r}")
         with self._tx():
             self.c.execute("UPDATE auditoriums SET kind = ? WHERE id = ?", (kind, int(aid)))
 
     def update_auditorium(self, aid: int, name: str, capacity: int) -> None:
+        # Переименовать зал и поменять число мест.
         with self._tx():
             self.c.execute(
                 "UPDATE auditoriums SET name = ?, capacity = ? WHERE id = ?",
@@ -235,43 +275,54 @@ class DB:
             )
 
     def delete_auditorium(self, aid: int) -> None:
+        # Удалить один зал.
         with self._tx():
             self.c.execute("DELETE FROM auditoriums WHERE id = ?", (int(aid),))
 
     def clear_auditoriums(self) -> None:
+        # Удалить ВСЕ залы разом.
         with self._tx():
             self.c.execute("DELETE FROM auditoriums")
 
-    # =============== ПРЕПОДАВАТЕЛИ ==================
+    # =============== ПРЕПОДАВАТЕЛИ (просто список имён) ==================
     def get_teachers(self) -> list[dict]:
+        # Все преподаватели по алфавиту.
         self.c.execute("SELECT id, name FROM teachers ORDER BY name")
         return [dict(r) for r in self.c.fetchall()]
 
     def add_teacher(self, name: str) -> int:
+        # Добавить преподавателя, вернуть его номер.
         with self._tx():
             self.c.execute("INSERT INTO teachers (name) VALUES (?)", (name,))
         return self.c.lastrowid
 
     def delete_teacher(self, tid: int) -> None:
+        # Удалить преподавателя (его связи с предметами/залами удалятся сами).
         with self._tx():
             self.c.execute("DELETE FROM teachers WHERE id = ?", (int(tid),))
 
-    # ================= ПРЕДМЕТЫ =================
+    # ================= ПРЕДМЕТЫ (Математика, Физика...) =================
     def get_subjects(self) -> list[dict]:
+        # Все предметы по алфавиту.
         self.c.execute("SELECT id, name FROM subjects ORDER BY name")
         return [dict(r) for r in self.c.fetchall()]
 
     def add_subject(self, name: str) -> int:
+        # Добавить предмет, вернуть его номер.
         with self._tx():
             self.c.execute("INSERT INTO subjects (name) VALUES (?)", (name,))
         return self.c.lastrowid
 
     def delete_subject(self, sid: int) -> None:
+        # Удалить предмет.
         with self._tx():
             self.c.execute("DELETE FROM subjects WHERE id = ?", (int(sid),))
 
-    # ================= ПРЕПОД - ПРЕДМЕТ ================
+    # ================= ПРЕПОД - ПРЕДМЕТ ("кто что может вести") ================
+    # Это связи "многие ко многим": один препод ведёт много предметов, один предмет ведут многие.
     def assign_teacher_subject(self, teacher_id: int, subject_id: int) -> None:
+        # Привязать предмет к преподавателю ("Иванов теперь ведёт Математику").
+        # OR IGNORE = если такая связь уже есть, не ругаться, просто пропустить.
         with self._tx():
             self.c.execute(
                 "INSERT OR IGNORE INTO teacher_subjects (teacher_id, subject_id) VALUES (?, ?)",
@@ -279,6 +330,7 @@ class DB:
             )
 
     def unassign_teacher_subject(self, teacher_id: int, subject_id: int) -> None:
+        # Отвязать ("Иванов больше НЕ ведёт Математику").
         with self._tx():
             self.c.execute(
                 "DELETE FROM teacher_subjects WHERE teacher_id = ? AND subject_id = ?",
@@ -286,6 +338,7 @@ class DB:
             )
 
     def get_subjects_of_teacher(self, teacher_id: int) -> list[dict]:
+        # "Что ведёт этот преподаватель?" - список его предметов.
         self.c.execute('''
             SELECT s.id, s.name FROM teacher_subjects ts
             JOIN subjects s ON s.id = ts.subject_id
@@ -295,6 +348,7 @@ class DB:
         return [dict(r) for r in self.c.fetchall()]
 
     def get_teachers_of_subject(self, subject_id: int) -> list[dict]:
+        # Наоборот: "Кто ведёт этот предмет?" - список преподавателей.
         self.c.execute('''
             SELECT t.id, t.name FROM teacher_subjects ts
             JOIN teachers t ON t.id = ts.teacher_id
@@ -303,8 +357,9 @@ class DB:
         ''', (int(subject_id),))
         return [dict(r) for r in self.c.fetchall()]
 
-    # ================= ПРЕПОД - АУДИТОРИЯ ==================
+    # ================= ПРЕПОД - АУДИТОРИЯ ("кто в каких залах любит вести") ==================
     def assign_teacher_auditorium(self, teacher_id: int, auditorium_id: int) -> None:
+        # Привязать зал к преподавателю ("Петрова обычно сидит в А-101").
         with self._tx():
             self.c.execute(
                 "INSERT OR IGNORE INTO teacher_auditoriums (teacher_id, auditorium_id) VALUES (?, ?)",
@@ -312,6 +367,7 @@ class DB:
             )
 
     def unassign_teacher_auditorium(self, teacher_id: int, auditorium_id: int) -> None:
+        # Отвязать зал от преподавателя.
         with self._tx():
             self.c.execute(
                 "DELETE FROM teacher_auditoriums WHERE teacher_id = ? AND auditorium_id = ?",
@@ -319,6 +375,7 @@ class DB:
             )
 
     def get_auditoriums_of_teacher(self, teacher_id: int) -> list[Auditorium]:
+        # "В каких залах бывает этот преподаватель?" - его любимые аудитории.
         self.c.execute('''
             SELECT a.id, a.name, a.capacity, a.kind
             FROM teacher_auditoriums ta
@@ -330,8 +387,9 @@ class DB:
                            capacity=r["capacity"], kind=r["kind"])
                 for r in self.c.fetchall()]
 
-    # ================= КУРС - ПРЕДМЕТ ==================
+    # ================= КУРС - ПРЕДМЕТ ("что учат на каждом курсе") ==================
     def add_course_subject(self, course_number: int, subject_id: int) -> None:
+        # Сказать: "на 2 курсе есть Математика". Курс создастся сам, если его не было.
         cid = self._get_or_create_course(int(course_number))
         with self._tx():
             self.c.execute(
@@ -340,6 +398,7 @@ class DB:
             )
 
     def remove_course_subject(self, course_number: int, subject_id: int) -> None:
+        # Убрать предмет с курса ("на 2 курсе больше нет Математики").
         cid = self._get_or_create_course(int(course_number))
         with self._tx():
             self.c.execute(
@@ -348,6 +407,7 @@ class DB:
             )
 
     def get_course_subjects(self, course_number: int) -> list[dict]:
+        # "Какие предметы на этом курсе?" - например, для 1 курса: Математика, История...
         self.c.execute('''
             SELECT s.id, s.name FROM course_subjects cs
             JOIN courses  c ON c.id = cs.course_id
@@ -358,6 +418,7 @@ class DB:
         return [dict(r) for r in self.c.fetchall()]
 
     def get_courses_of_subject(self, subject_id: int) -> list[int]:
+        # Наоборот: "На каких курсах есть этот предмет?" - например, Математика на 1 и 2 курсе.
         self.c.execute('''
             SELECT c.number FROM course_subjects cs
             JOIN courses c ON c.id = cs.course_id
@@ -366,13 +427,16 @@ class DB:
         ''', (int(subject_id),))
         return [r["number"] for r in self.c.fetchall()]
 
-    # ==================== РАСПРЕДЕЛЕНИЕ (черновик) ====================
+    # ==================== РАСПРЕДЕЛЕНИЕ (черновик: "прикинули, кто куда сядет") ====================
     def save_distribution(
         self,
         subject_id: int,
         assignments: list[tuple[int, int, int]],
     ) -> None:
-        """assignments: список (group_id, auditorium_id, pair_number)."""
+        """Сохранить черновик раскладки.
+        assignments: список (group_id, auditorium_id, pair_number) = "группа X сядет в зал Y на пару Z".
+        Старый черновик для этого предмета стирается, пишется новый.
+        """
         sid = int(subject_id)
         with self._tx():
             self.c.execute("DELETE FROM distribution WHERE subject_id = ?", (sid,))
@@ -385,6 +449,7 @@ class DB:
                 )
 
     def load_distribution(self, subject_id: int) -> list[dict]:
+        # Прочитать сохранённый черновик: кто в каком зале и на какой паре (с именами, а не номерами).
         self.c.execute('''
             SELECT a.id AS aud_id, a.name AS aud_name, a.capacity,
                    g.id AS grp_id, g.name AS grp_name, g.students,

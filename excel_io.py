@@ -1,30 +1,38 @@
 # excel_io.py
 """Экспорт и импорт данных в/из Excel (.xlsx) через openpyxl.
 
-Формат файла — один лист на сущность:
+Простыми словами:
+- ЭКСПОРТ = "выгрузить всё из программы в файл Excel", чтобы отправить кому-то или распечатать.
+- ИМПОРТ = "загрузить всё из Excel обратно в программу".
+- Формат файла — один лист на сущность (как вкладки внизу Excel):
   Группы, Аудитории, Преподаватели, Предметы,
   Преподаватель-Предмет, Преподаватель-Аудитория, Курс-Предмет,
   Расписание.
-
-Импорт идемпотентен: записи сопоставляются по названиям,
-существующие обновляются, отсутствующие создаются.
+- Импорт "умный и добрый" (идемпотентный): записи ищутся по названиям,
+  если такая уже есть - она обновляется, если нет - создаётся.
+  Одна плохая строчка не ломает весь файл: она пропускается, а ошибка
+  записывается в список errors в конце.
 """
 
-from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl import Workbook, load_workbook  # библиотека для чтения/записи Excel
+from openpyxl.styles import Font, PatternFill  # красивости: жирный шрифт и заливка шапки
 
-from db import KIND_LECTURE, KIND_PRACTICE
+from db import KIND_LECTURE, KIND_PRACTICE  # два типа занятий, чтобы не опечататься
 
+# Как красим первую строку (шапку) каждого листа: тёмный фон + светлый жирный текст.
 HEADER_FILL = PatternFill(start_color="3D3D3D", end_color="3D3D3D", fill_type="solid")
 HEADER_FONT = Font(bold=True, color="E6E6E6")
 
+# Переводчики типа занятия: внутри программы "lecture", а человеку показываем "Лекция".
 KIND_TO_RU = {KIND_LECTURE: "Лекция", KIND_PRACTICE: "Практика"}
+# Обратный переводчик: понимаем "Лекция", "л", "lecture" и т.д. (всё приводим к нижнему регистру).
 RU_TO_KIND = {
     "лекция": KIND_LECTURE, "lecture": KIND_LECTURE, "л": KIND_LECTURE,
     "практика": KIND_PRACTICE, "practice": KIND_PRACTICE, "п": KIND_PRACTICE,
 }
-WEEKDAYS_RU = ["Пн", "Вт", "Ср", "Чт", "Пт"]
+WEEKDAYS_RU = ["Пн", "Вт", "Ср", "Чт", "Пт"]  # дни недели: 0=Пн ... 4=Пт
 
+# Карта всех листов: внутреннее имя -> (название листа в Excel, названия колонок).
 SHEETS = {
     "groups": ("Группы", ["Название", "Студентов", "Курс"]),
     "auditoriums": ("Аудитории", ["Название", "Вместимость", "Тип"]),
@@ -39,15 +47,18 @@ SHEETS = {
 
 
 def _write_sheet(wb, key, rows):
+    # Помощник: создать один лист в Excel и заполнить его.
+    # wb = весь файл, key = какой лист ("groups", "teachers"...), rows = строчки данных.
     title, headers = SHEETS[key]
-    ws = wb.create_sheet(title)
+    ws = wb.create_sheet(title)  # создаём лист с русским названием
     for col, h in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col, value=h)
+        cell = ws.cell(row=1, column=col, value=h)  # первая строка - шапка
         cell.font = HEADER_FONT
         cell.fill = HEADER_FILL
-    for r, row in enumerate(rows, 2):
+    for r, row in enumerate(rows, 2):  # остальные строки - данные (начиная со 2-й)
         for col, value in enumerate(row, 1):
             ws.cell(row=r, column=col, value=value)
+    # Подгоняем ширину колонок под текст (но не уже 12 и не шире 50).
     for col in range(1, len(headers) + 1):
         widths = [len(str(ws.cell(row=r, column=col).value or ""))
                   for r in range(1, ws.max_row + 1)]
@@ -57,7 +68,11 @@ def _write_sheet(wb, key, rows):
 
 
 def export_to_excel(db, path: str) -> dict:
-    """Выгружает все данные БД в .xlsx. Возвращает {лист: кол-во строк}."""
+    """Выгружает все данные БД в .xlsx. Возвращает {лист: кол-во строк}.
+
+    Простыми словами: проходим по всем таблицам базы и переписываем их
+    в красивый Excel-файл по адресу path. В конце говорим, сколько чего записали.
+    """
     wb = Workbook()
     wb.remove(wb.active)
     stats = {}
@@ -119,7 +134,11 @@ def export_to_excel(db, path: str) -> dict:
 
 
 def _read_sheet(wb, key):
-    """Возвращает список словарей {заголовок: значение} (пустые строки пропуск)."""
+    """Прочитать один лист Excel как список словарей {заголовок: значение}.
+
+    Пустые строки пропускаем. Если такого листа в файле нет - возвращаем [].
+    Пример результата: [{"Название": "ИСП-101", "Студентов": 25, "Курс": 2}, ...].
+    """
     title, _headers = SHEETS[key]
     if title not in wb.sheetnames:
         return []
@@ -138,6 +157,9 @@ def _read_sheet(wb, key):
 
 
 def _parse_kind(value) -> str | None:
+    # Понять тип занятия из ячейки Excel. Принимаем "Лекция", "л", "lecture" и т.п.
+    # Пустая ячейка = None (потом заменится на лекцию по умолчанию).
+    # Непонятное слово = ошибка с подсказкой.
     if value is None or str(value).strip() == "":
         return None
     kind = RU_TO_KIND.get(str(value).strip().lower())
@@ -147,6 +169,8 @@ def _parse_kind(value) -> str | None:
 
 
 def _parse_weekday(value) -> int:
+    # Понять день недели из ячейки: можно "Пн"/"понедельник" или число 0..4 (0=Пн).
+    # Пустая ячейка = понедельник (0). Непонятное = ошибка.
     if value is None or str(value).strip() == "":
         return 0
     s = str(value).strip()
@@ -160,7 +184,10 @@ def _parse_weekday(value) -> int:
 
 
 def _find_id(db, table: str, name: str):
-    """Ищет id записи по точному названию. None если нет."""
+    """Найти номер (id) записи по её точному названию. Если нет такой - вернуть None.
+
+    Нужно при импорте: в Excel написаны имена ("Иванов"), а базе нужны номера (id=5).
+    """
     row = db.c.execute(f"SELECT id FROM {table} WHERE name = ?", (name,)).fetchone()
     return int(row["id"]) if row else None
 
@@ -168,7 +195,11 @@ def _find_id(db, table: str, name: str):
 def import_from_excel(db, path: str) -> dict:
     """Загружает данные из .xlsx в БД.
 
-    Возвращает {"added": {...}, "updated": {...}, "errors": [...]}.
+    Простыми словами: открывает Excel, идёт по листам сверху вниз:
+    сначала простые вещи (группы, залы, люди, предметы), потом связи между ними,
+    в самом конце - расписание (ему нужны все остальные).
+    Возвращает {"added": {...}, "updated": {...}, "errors": [...]}:
+    что добавилось, что обновилось и какие строчки были с ошибками.
     Ошибки в отдельных строках не прерывают импорт остальных.
     """
     wb = load_workbook(path, data_only=True)
